@@ -1,0 +1,4 @@
+# migrations/versions/
+# Alembic auto-generated migration versions will be created here.
+# Run: alembic revision --autogenerate -m "initial schema"
+# to generate the first migration once the database is running.
