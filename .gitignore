@@ -1,0 +1,67 @@
+# Environment / secrets
+.env
+.env.*
+!.env.example
+*.env
+*.local
+backend/.env
+backend/.env.*
+frontend/.env
+frontend/.env.*
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+.pytype/
+.pyre/
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+
+# Local databases
+*.db
+*.sqlite
+*.sqlite3
+
+# Logs
+*.log
+logs/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Node
+node_modules/
+.next/
+out/
+dist/
+build/
+coverage/
+
+# Local AI / model artifacts
+ollama/
+models/
+
+# Temporary files
+tmp/
+temp/
+*.tmp
+
+# Generated artifacts
+*.pid
