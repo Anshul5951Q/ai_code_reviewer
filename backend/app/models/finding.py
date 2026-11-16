@@ -10,6 +10,7 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from app.models.base import Base
 
 if TYPE_CHECKING:
+    from app.models.finding_relationship import FindingRelationship
     from app.models.remediation_run import RemediationRun
     from app.models.review import Review
 
@@ -63,6 +64,9 @@ class Finding(Base):
     review: Mapped["Review"] = relationship("Review", back_populates="findings")
     remediation_runs: Mapped[List["RemediationRun"]] = relationship(
         "RemediationRun", back_populates="finding", cascade="all, delete-orphan"
+    )
+    finding_relationships: Mapped[List["FindingRelationship"]] = relationship(
+        "FindingRelationship", back_populates="source_finding", cascade="all, delete-orphan"
     )
 
     def __repr__(self) -> str:

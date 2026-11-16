@@ -11,7 +11,6 @@ import {
   Sparkles,
 } from 'lucide-react';
 import { PageHeader } from '@/components/layout/page-header';
-import { LoadingState } from '@/components/common/loading-state';
 import { ReviewAnalysisProgress } from '@/components/reviews/review-analysis-progress';
 import { RepositorySnapshotCard } from '@/components/reviews/repository-snapshot';
 import { AnalysisErrorCard } from '@/components/reviews/analysis-error';
@@ -26,7 +25,6 @@ import {
   getAnalysisStatus,
   getReviewSnapshot,
   startAnalysis,
-  runReviewAnalysis,
   getReviewAgents,
   getReviewFindings,
 } from '@/lib/api';
@@ -43,22 +41,30 @@ interface ReviewDetailViewProps {
 }
 
 export function ReviewDetailView({ reviewId }: ReviewDetailViewProps) {
+  const isValidReviewId = Boolean(
+    reviewId && typeof reviewId === 'string' && reviewId.trim() !== '' && reviewId !== 'undefined'
+  );
+
   const [review, setReview] = useState<Review | null>(null);
   const [job, setJob] = useState<AnalysisJob | null>(null);
   const [snapshot, setSnapshot] = useState<RepositorySnapshot | null>(null);
   const [agents, setAgents] = useState<AgentRun[]>([]);
   const [findings, setFindings] = useState<Finding[]>([]);
 
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-  const [startingIngestion, setStartingIngestion] = useState(false);
-  const [startingAgentRun, setStartingAgentRun] = useState(false);
+  const [loading, setLoading] = useState<boolean>(() => isValidReviewId);
+  const [error, setError] = useState<string | null>(() =>
+    isValidReviewId ? null : 'Invalid or missing review ID.'
+  );
+  const [startingAnalysis, setStartingAnalysis] = useState(false);
 
   const pollTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const isMounted = useRef(true);
+  const hasFetchedSnapshot = useRef(false);
+  const hasFetchedTerminalFindings = useRef(false);
 
   // Fetch review details
   const fetchReview = useCallback(async () => {
+    if (!isValidReviewId) return null;
     try {
       const rev = await getReview(reviewId);
       if (!isMounted.current) return null;
@@ -66,14 +72,23 @@ export function ReviewDetailView({ reviewId }: ReviewDetailViewProps) {
       return rev;
     } catch (err) {
       if (!isMounted.current) return null;
+      if (err instanceof ApiClientError && err.status === 401) {
+        setError('Your session has expired. Please log in again.');
+        return null;
+      }
+      if (err instanceof ApiClientError && err.status === 404) {
+        setError('Review Not Found');
+        return null;
+      }
       const msg = err instanceof ApiClientError ? err.detail : 'Failed to load review.';
       setError(msg);
       return null;
     }
-  }, [reviewId]);
+  }, [reviewId, isValidReviewId]);
 
   // Fetch current ingestion job status
   const fetchJob = useCallback(async (): Promise<AnalysisJob | null> => {
+    if (!isValidReviewId) return null;
     try {
       const j = await getAnalysisStatus(reviewId);
       if (!isMounted.current) return null;
@@ -85,10 +100,11 @@ export function ReviewDetailView({ reviewId }: ReviewDetailViewProps) {
       }
       return null;
     }
-  }, [reviewId]);
+  }, [reviewId, isValidReviewId]);
 
   // Fetch completed snapshot
   const fetchSnapshot = useCallback(async () => {
+    if (!isValidReviewId) return;
     try {
       const snap = await getReviewSnapshot(reviewId);
       if (!isMounted.current) return;
@@ -96,10 +112,11 @@ export function ReviewDetailView({ reviewId }: ReviewDetailViewProps) {
     } catch {
       // Not available yet
     }
-  }, [reviewId]);
+  }, [reviewId, isValidReviewId]);
 
   // Fetch agent runs
   const fetchAgents = useCallback(async () => {
+    if (!isValidReviewId) return [];
     try {
       const res = await getReviewAgents(reviewId);
       if (!isMounted.current) return [];
@@ -108,10 +125,11 @@ export function ReviewDetailView({ reviewId }: ReviewDetailViewProps) {
     } catch {
       return [];
     }
-  }, [reviewId]);
+  }, [reviewId, isValidReviewId]);
 
   // Fetch findings
   const fetchFindings = useCallback(async () => {
+    if (!isValidReviewId) return [];
     try {
       const res = await getReviewFindings(reviewId, { limit: 100 });
       if (!isMounted.current) return [];
@@ -120,38 +138,58 @@ export function ReviewDetailView({ reviewId }: ReviewDetailViewProps) {
     } catch {
       return [];
     }
-  }, [reviewId]);
+  }, [reviewId, isValidReviewId]);
 
   const pollCallbackRef = useRef<() => void>(() => {});
 
-  // Polling loop
+  // Optimized Polling loop with parallel queries and Page Visibility check
   const checkStatusAndSchedulePoll = useCallback(async () => {
-    if (!isMounted.current) return;
+    if (!isMounted.current || !isValidReviewId) return;
 
-    const currentRev = await fetchReview();
-    const currentJob = await fetchJob();
-
-    if (currentJob?.status === 'completed') {
-      await fetchSnapshot();
+    // Do not poll if the browser tab is hidden
+    if (typeof document !== 'undefined' && document.hidden) {
+      return;
     }
 
-    const currentAgents = await fetchAgents();
-    await fetchFindings();
+    // Parallelize active status queries across the network
+    const [currentRev, currentJob, currentAgents] = await Promise.all([
+      fetchReview(),
+      fetchJob(),
+      fetchAgents(),
+    ]);
 
-    // Check if either ingestion is running or multi-agent review is running
-    const isIngestionRunning =
+    // Fetch snapshot only once upon ingestion completion
+    if (currentJob?.status === 'completed' && !hasFetchedSnapshot.current) {
+      hasFetchedSnapshot.current = true;
+      void fetchSnapshot();
+    }
+
+    // Check if either pipeline or multi-agent review is running
+    const isJobRunning =
       currentJob && !['completed', 'failed', 'cancelled'].includes(currentJob.status);
-    const isAgentsRunning =
+    const isReviewRunning =
       currentRev?.status === 'running' ||
-      currentAgents.some((a) => a.status === 'running' || a.status === 'queued');
+      currentRev?.status === 'ingesting';
+    const isAgentsRunning =
+      currentAgents.some((a) => a.status === 'running' || a.status === 'queued' || a.status === 'analyzing');
 
-    if (isIngestionRunning || isAgentsRunning) {
+    const isRunning = isJobRunning || isReviewRunning || isAgentsRunning;
+
+    // Refresh findings initially and upon terminal completion
+    if (!isRunning || !hasFetchedTerminalFindings.current) {
+      void fetchFindings();
+      if (!isRunning && currentRev?.status === 'completed') {
+        hasFetchedTerminalFindings.current = true;
+      }
+    }
+
+    if (isRunning) {
       if (pollTimerRef.current) clearTimeout(pollTimerRef.current);
       pollTimerRef.current = setTimeout(() => {
         pollCallbackRef.current();
       }, POLL_INTERVAL_MS);
     }
-  }, [fetchReview, fetchJob, fetchSnapshot, fetchAgents, fetchFindings]);
+  }, [fetchReview, fetchJob, fetchSnapshot, fetchAgents, fetchFindings, isValidReviewId]);
 
   useEffect(() => {
     pollCallbackRef.current = () => {
@@ -159,9 +197,24 @@ export function ReviewDetailView({ reviewId }: ReviewDetailViewProps) {
     };
   }, [checkStatusAndSchedulePoll]);
 
+  // Page visibility listener: resume immediately when user returns to tab
+  useEffect(() => {
+    const handleVisibilityChange = () => {
+      if (typeof document !== 'undefined' && !document.hidden && isMounted.current) {
+        void checkStatusAndSchedulePoll();
+      }
+    };
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    return () => {
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+    };
+  }, [checkStatusAndSchedulePoll]);
+
   // Initial load
   useEffect(() => {
     isMounted.current = true;
+
+    if (!isValidReviewId) return;
 
     const init = async () => {
       setLoading(true);
@@ -175,46 +228,56 @@ export function ReviewDetailView({ reviewId }: ReviewDetailViewProps) {
       isMounted.current = false;
       if (pollTimerRef.current) clearTimeout(pollTimerRef.current);
     };
-  }, [checkStatusAndSchedulePoll]);
+  }, [checkStatusAndSchedulePoll, isValidReviewId]);
 
-  // Start Phase 3 ingestion
-  const handleStartIngestion = async () => {
-    setStartingIngestion(true);
+  // Unified single workflow: start full end-to-end analysis pipeline
+  const handleStartAnalysis = async () => {
+    if (!isValidReviewId) return;
+    setStartingAnalysis(true);
     try {
       await startAnalysis(reviewId);
       void checkStatusAndSchedulePoll();
     } catch (err) {
-      const msg = err instanceof ApiClientError ? err.detail : 'Failed to start ingestion.';
+      const msg = err instanceof ApiClientError ? err.detail : 'Failed to start analysis.';
       setError(msg);
     } finally {
-      setStartingIngestion(false);
-    }
-  };
-
-  // Start Phase 5 multi-agent review
-  const handleStartAgentRun = async () => {
-    setStartingAgentRun(true);
-    try {
-      await runReviewAnalysis(reviewId);
-      void checkStatusAndSchedulePoll();
-    } catch (err) {
-      const msg = err instanceof ApiClientError ? err.detail : 'Failed to start multi-agent analysis.';
-      setError(msg);
-    } finally {
-      setStartingAgentRun(false);
+      setStartingAnalysis(false);
     }
   };
 
   if (loading) {
-    return <LoadingState message="Loading review details..." />;
+    return (
+      <div className="review-detail space-y-6 animate-pulse">
+        <div className="review-detail__header">
+          <Link href="/dashboard/reviews" className="review-detail__back-link">
+            <ArrowLeft size={16} />
+            Back to Reviews
+          </Link>
+          <PageHeader
+            title="Multi-Agent Code Intelligence"
+            description={`Loading review ${isValidReviewId ? reviewId.slice(0, 8) : ''}…`}
+          />
+        </div>
+        <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-6">
+          {[...Array(4)].map((_, i) => (
+            <div key={i} className="card h-24 bg-white/5 rounded" />
+          ))}
+        </div>
+        <div className="card h-48 bg-white/5 rounded" />
+      </div>
+    );
   }
 
   if (error && !review) {
+    const isAuthError =
+      error.toLowerCase().includes('session') ||
+      error.toLowerCase().includes('log in') ||
+      error.toLowerCase().includes('expired');
     return (
       <div className="review-detail-error">
         <PageHeader
-          title="Review Not Found"
-          description="The requested review could not be loaded."
+          title={isAuthError ? 'Authentication Required' : 'Review Not Found'}
+          description={error}
         />
         <div className="review-detail-error__back">
           <Link href="/dashboard/reviews" className="btn btn-ghost">
@@ -226,18 +289,19 @@ export function ReviewDetailView({ reviewId }: ReviewDetailViewProps) {
     );
   }
 
-  const isIngestionActive = job && !['completed', 'failed', 'cancelled'].includes(job.status);
-  const isIngestionFailed = job?.status === 'failed';
-  const isIngestionCompleted = job?.status === 'completed' || !!snapshot;
-  const hasNoIngestion = !job && !snapshot;
-
-  const isAgentsRunning =
+  const isPipelineActive =
+    startingAnalysis ||
+    (job && !['completed', 'failed', 'cancelled'].includes(job.status)) ||
     review?.status === 'running' ||
-    agents.some((a) => a.status === 'running' || a.status === 'queued');
+    review?.status === 'ingesting' ||
+    agents.some((a) => a.status === 'running' || a.status === 'queued' || a.status === 'analyzing');
+
+  const isPipelineFailed = (job?.status === 'failed' || review?.status === 'failed') && !isPipelineActive;
   const hasCompletedAgents =
     review?.status === 'completed' ||
     review?.status === 'completed_with_warnings' ||
     agents.some((a) => a.status === 'completed');
+  const hasNoIngestion = !job && !snapshot && !hasCompletedAgents;
 
   return (
     <div className="review-detail space-y-6">
@@ -251,22 +315,21 @@ export function ReviewDetailView({ reviewId }: ReviewDetailViewProps) {
           title="Multi-Agent Code Intelligence"
           description={`Review ${reviewId.slice(0, 8)}…`}
           actions={
-            isIngestionCompleted &&
-            !isAgentsRunning && (
+            !isPipelineActive && (
               <button
                 className="btn btn-primary flex items-center gap-2 text-xs py-2 px-3"
-                onClick={() => void handleStartAgentRun()}
-                disabled={startingAgentRun}
+                onClick={() => void handleStartAnalysis()}
+                disabled={startingAnalysis}
               >
-                {startingAgentRun ? (
+                {startingAnalysis ? (
                   <>
                     <RefreshCw size={14} className="spin" />
-                    Starting Agents…
+                    Starting Analysis…
                   </>
                 ) : (
                   <>
                     <Sparkles size={14} />
-                    {hasCompletedAgents ? 'Re-run Multi-Agent Analysis' : 'Run Multi-Agent Review'}
+                    {hasCompletedAgents ? 'Re-run Full Analysis' : 'Start Full Analysis'}
                   </>
                 )}
               </button>
@@ -302,59 +365,76 @@ export function ReviewDetailView({ reviewId }: ReviewDetailViewProps) {
         </div>
       )}
 
-      {/* Ingestion Start Card if repository has not been ingested yet */}
-      {hasNoIngestion && !error && (
+      {/* Warning banner for partially completed analysis */}
+      {review?.status === 'completed_with_warnings' && (
+        <div className="p-3.5 rounded-lg border border-amber-500/20 bg-amber-500/10 text-amber-300 text-xs flex items-center justify-between gap-3">
+          <div className="flex items-center gap-2">
+            <span className="text-amber-400 font-semibold">Partial Analysis Notice:</span>
+            <span>
+              One or more non-fatal agent evaluations encountered errors. Valid findings from successful agents have been preserved.
+              {agents.filter((a) => a.status === 'failed').length > 0 && (
+                <span className="ml-1 text-amber-200">
+                  (Failed: {agents.filter((a) => a.status === 'failed').map((a) => a.agent_type.replace(/_/g, ' ')).join(', ')})
+                </span>
+              )}
+            </span>
+          </div>
+        </div>
+      )}
+
+      {/* Single Analysis Start Card if repository has not been analyzed yet */}
+      {hasNoIngestion && !isPipelineActive && !error && (
         <div className="review-detail__start">
           <div className="review-start-card">
             <div className="review-start-card__icon">⚡</div>
-            <h3 className="review-start-card__title">Repository Ingestion Required</h3>
+            <h3 className="review-start-card__title">Autonomous Code Review</h3>
             <p className="review-start-card__desc">
-              Before AI agents can analyze the codebase, ingest and snapshot the repository at this commit.
+              Execute full end-to-end repository ingestion, multi-agent code understanding, code quality, and security vulnerability analysis in a single workflow.
             </p>
             <button
               className="btn btn-primary review-start-card__btn"
-              onClick={() => void handleStartIngestion()}
-              disabled={startingIngestion}
+              onClick={() => void handleStartAnalysis()}
+              disabled={startingAnalysis}
             >
-              {startingIngestion ? (
+              {startingAnalysis ? (
                 <>
                   <RefreshCw size={16} className="spin" />
-                  Starting Ingestion…
+                  Starting Analysis…
                 </>
               ) : (
-                <>⚡ Start Ingestion</>
+                <>⚡ Start Full Analysis</>
               )}
             </button>
           </div>
         </div>
       )}
 
-      {/* Ingestion progress (Phase 3) */}
-      {(isIngestionActive || job) && !isIngestionCompleted && !isIngestionFailed && job && (
+      {/* Analysis progress (Live Pipeline Progress) */}
+      {isPipelineActive && job && (
         <ReviewAnalysisProgress job={job} />
       )}
 
-      {/* Ingestion Error state */}
-      {isIngestionFailed && job && (
+      {/* Pipeline Error state */}
+      {isPipelineFailed && job && (
         <AnalysisErrorCard
-          error={job.error ?? 'An unknown error occurred during repository ingestion.'}
-          onRetry={() => void handleStartIngestion()}
+          error={job.error ?? 'An error occurred during repository analysis.'}
+          onRetry={() => void handleStartAnalysis()}
         />
       )}
 
-      {/* Phase 5 Multi-Agent Pipeline Progress */}
-      {isIngestionCompleted && (
+      {/* Multi-Agent Pipeline Telemetry */}
+      {(isPipelineActive || hasCompletedAgents) && (
         <AgentAnalysisProgress
           agents={agents}
-          isAnalysisRunning={isAgentsRunning}
-          onTriggerAnalysis={() => void handleStartAgentRun()}
-          canTriggerAnalysis={!isAgentsRunning}
+          isAnalysisRunning={isPipelineActive}
+          onTriggerAnalysis={() => void handleStartAnalysis()}
+          canTriggerAnalysis={!isPipelineActive}
         />
       )}
 
       {/* Agent Results Summary (Scores) */}
       {review && hasCompletedAgents && (
-        <AgentResultSummary review={review} totalFindings={findings.length} />
+        <AgentResultSummary review={review} totalFindings={findings.length} snapshot={snapshot} />
       )}
 
       {/* Agent Status Cards Grid */}
@@ -375,7 +455,7 @@ export function ReviewDetailView({ reviewId }: ReviewDetailViewProps) {
       {hasCompletedAgents && (
         <div className="space-y-4">
           <FindingsSummary findings={findings} />
-          <FindingList findings={findings} />
+          <FindingList findings={findings} reviewId={reviewId} />
         </div>
       )}
 

@@ -61,6 +61,19 @@ class Settings(BaseSettings):
     max_concurrent_ingestion_jobs: int = 2
     worker_poll_interval_seconds: float = 0.5
 
+    # LLM Provider Configuration
+    llm_provider: str = "ollama"
+
+    # Ollama Local LLM Provider (Phase 7)
+    ollama_base_url: str = "http://localhost:11434"
+    ollama_model: str = "qwen2.5-coder:7b"
+    ollama_timeout_seconds: float = 120.0
+    ollama_max_concurrent: int = 1
+    ollama_context_size: int = 8192
+    ollama_temperature: float = 0.1
+    ollama_keep_alive: str = "15m"
+    ollama_max_retries: int = 2
+
     @property
     def async_database_url(self) -> str:
         """Convert standard database URL to async driver dialect if needed."""

@@ -2,8 +2,9 @@ from __future__ import annotations
 
 import base64
 import logging
+import time
 from abc import ABC, abstractmethod
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 import httpx
 from fastapi import Depends, Request
@@ -68,6 +69,15 @@ class BaseGitHubService(ABC):
         self, owner: str, repo: str, path: str, ref: Optional[str] = None
     ) -> GitHubFileContent:
         pass
+
+
+_GITHUB_CACHE: Dict[str, Tuple[float, Any]] = {}
+_GITHUB_CACHE_TTL_SECONDS: float = 60.0
+
+
+def clear_github_cache() -> None:
+    """Clear in-memory GitHub cache (for testing or manual cache busting)."""
+    _GITHUB_CACHE.clear()
 
 
 class GitHubService(BaseGitHubService):
@@ -170,7 +180,18 @@ class GitHubService(BaseGitHubService):
         return response
 
     async def verify_connection(self) -> GitHubStatusResponse:
-        """Verify connection status, authenticated user, and rate limits."""
+        """Verify connection status, authenticated user, and rate limits with short TTL caching."""
+        import hashlib
+
+        use_cache = self._external_client is None
+        token_hash = hashlib.sha256((self.token or "none").encode()).hexdigest()[:16]
+        cache_key = f"verify:{token_hash}"
+        now = time.monotonic()
+        if use_cache and cache_key in _GITHUB_CACHE:
+            cached_time, cached_res = _GITHUB_CACHE[cache_key]
+            if (now - cached_time) < 30.0:
+                return cached_res
+
         rate_limit_limit = None
         rate_limit_remaining = None
         rate_limit_reset = None
@@ -187,7 +208,7 @@ class GitHubService(BaseGitHubService):
             pass
 
         if not self.token:
-            return GitHubStatusResponse(
+            resp = GitHubStatusResponse(
                 connected=False,
                 rate_limit_limit=rate_limit_limit,
                 rate_limit_remaining=rate_limit_remaining,
@@ -195,6 +216,9 @@ class GitHubService(BaseGitHubService):
                 error="No GITHUB_TOKEN configured or connected",
                 oauth_configured=oauth_configured,
             )
+            if use_cache:
+                _GITHUB_CACHE[cache_key] = (now, resp)
+            return resp
 
         try:
             user_resp = await self._request("GET", "/user")
@@ -205,7 +229,7 @@ class GitHubService(BaseGitHubService):
             raw_scopes = user_resp.headers.get("X-OAuth-Scopes", "")
             scopes = [s.strip() for s in raw_scopes.split(",") if s.strip()]
 
-            return GitHubStatusResponse(
+            resp = GitHubStatusResponse(
                 connected=True,
                 github_login=login,
                 avatar_url=avatar_url,
@@ -217,8 +241,11 @@ class GitHubService(BaseGitHubService):
                 rate_limit_reset=rate_limit_reset,
                 oauth_configured=oauth_configured,
             )
+            if use_cache:
+                _GITHUB_CACHE[cache_key] = (now, resp)
+            return resp
         except GitHubAuthError:
-            return GitHubStatusResponse(
+            resp = GitHubStatusResponse(
                 connected=False,
                 rate_limit_limit=rate_limit_limit,
                 rate_limit_remaining=rate_limit_remaining,
@@ -226,8 +253,11 @@ class GitHubService(BaseGitHubService):
                 error="GitHub authentication token has expired or is invalid.",
                 oauth_configured=oauth_configured,
             )
+            if use_cache:
+                _GITHUB_CACHE[cache_key] = (now, resp)
+            return resp
         except GitHubRateLimitError:
-            return GitHubStatusResponse(
+            resp = GitHubStatusResponse(
                 connected=False,
                 rate_limit_limit=rate_limit_limit,
                 rate_limit_remaining=rate_limit_remaining,
@@ -235,6 +265,9 @@ class GitHubService(BaseGitHubService):
                 error="GitHub API rate limit exceeded.",
                 oauth_configured=oauth_configured,
             )
+            if use_cache:
+                _GITHUB_CACHE[cache_key] = (now, resp)
+            return resp
         except GitHubError as e:
             return GitHubStatusResponse(
                 connected=False,
@@ -301,71 +334,121 @@ class GitHubService(BaseGitHubService):
         return items
 
     async def get_repository(self, owner: str, repo: str) -> GitHubRepoItem:
-        """Fetch metadata for a single repository."""
-        resp = await self._request("GET", f"/repos/{owner}/{repo}")
-        r = resp.json()
-        owner_login = r.get("owner", {}).get("login", owner) if isinstance(r.get("owner"), dict) else owner
-        return GitHubRepoItem(
-            id=r["id"],
-            name=r["name"],
-            full_name=r.get("full_name", f"{owner_login}/{r['name']}"),
-            owner=owner_login,
-            html_url=r.get("html_url", f"https://github.com/{owner_login}/{r['name']}"),
-            default_branch=r.get("default_branch", "main"),
-            visibility="private" if r.get("private") else "public",
-            language=r.get("language"),
-            description=r.get("description"),
-            updated_at=r.get("updated_at"),
-        )
+        """Fetch metadata for a single repository with in-memory caching."""
+        use_cache = self._external_client is None
+        cache_key = f"repo:{owner.lower()}/{repo.lower()}"
+        now = time.monotonic()
+        if use_cache and cache_key in _GITHUB_CACHE:
+            cached_time, cached_item = _GITHUB_CACHE[cache_key]
+            if (now - cached_time) < _GITHUB_CACHE_TTL_SECONDS:
+                return cached_item
+
+        try:
+            resp = await self._request("GET", f"/repos/{owner}/{repo}")
+            r = resp.json()
+            owner_login = r.get("owner", {}).get("login", owner) if isinstance(r.get("owner"), dict) else owner
+            item = GitHubRepoItem(
+                id=r["id"],
+                name=r["name"],
+                full_name=r.get("full_name", f"{owner_login}/{r['name']}"),
+                owner=owner_login,
+                html_url=r.get("html_url", f"https://github.com/{owner_login}/{r['name']}"),
+                default_branch=r.get("default_branch", "main"),
+                visibility="private" if r.get("private") else "public",
+                language=r.get("language"),
+                description=r.get("description"),
+                updated_at=r.get("updated_at"),
+            )
+            if use_cache:
+                _GITHUB_CACHE[cache_key] = (now, item)
+            return item
+        except GitHubRateLimitError:
+            if cache_key in _GITHUB_CACHE:
+                logger.warning("GitHub rate limit hit; serving cached repo metadata for %s/%s", owner, repo)
+                return _GITHUB_CACHE[cache_key][1]
+            raise
 
     async def list_branches(self, owner: str, repo: str) -> List[GitHubBranch]:
-        """List branches for a repository."""
-        resp = await self._request("GET", f"/repos/{owner}/{repo}/branches", params={"per_page": 100})
-        branches_data = resp.json()
+        """List branches for a repository with in-memory caching."""
+        use_cache = self._external_client is None
+        cache_key = f"branches:{owner.lower()}/{repo.lower()}"
+        now = time.monotonic()
+        if use_cache and cache_key in _GITHUB_CACHE:
+            cached_time, cached_branches = _GITHUB_CACHE[cache_key]
+            if (now - cached_time) < _GITHUB_CACHE_TTL_SECONDS:
+                return cached_branches
 
-        branches: List[GitHubBranch] = []
-        for b in branches_data:
-            if isinstance(b, dict):
-                commit_sha = b.get("commit", {}).get("sha", "") if isinstance(b.get("commit"), dict) else ""
-                branches.append(
-                    GitHubBranch(
-                        name=b["name"],
-                        commit_sha=commit_sha,
-                        protected=b.get("protected", False),
+        try:
+            resp = await self._request("GET", f"/repos/{owner}/{repo}/branches", params={"per_page": 100})
+            branches_data = resp.json()
+
+            branches: List[GitHubBranch] = []
+            for b in branches_data:
+                if isinstance(b, dict):
+                    commit_sha = b.get("commit", {}).get("sha", "") if isinstance(b.get("commit"), dict) else ""
+                    branches.append(
+                        GitHubBranch(
+                            name=b["name"],
+                            commit_sha=commit_sha,
+                            protected=b.get("protected", False),
+                        )
                     )
-                )
-        return branches
+            if use_cache:
+                _GITHUB_CACHE[cache_key] = (now, branches)
+            return branches
+        except GitHubRateLimitError:
+            if cache_key in _GITHUB_CACHE:
+                logger.warning("GitHub rate limit hit; serving cached branches for %s/%s", owner, repo)
+                return _GITHUB_CACHE[cache_key][1]
+            raise
 
     async def list_commits(
         self, owner: str, repo: str, branch: Optional[str] = None, limit: int = 30
     ) -> List[GitHubCommit]:
-        """List commits for a repository."""
+        """List commits for a repository with in-memory caching."""
+        use_cache = self._external_client is None
+        branch_key = branch or "default"
+        cache_key = f"commits:{owner.lower()}/{repo.lower()}:{branch_key}:{limit}"
+        now = time.monotonic()
+        if use_cache and cache_key in _GITHUB_CACHE:
+            cached_time, cached_commits = _GITHUB_CACHE[cache_key]
+            if (now - cached_time) < _GITHUB_CACHE_TTL_SECONDS:
+                return cached_commits
+
         params: Dict[str, Any] = {"per_page": min(limit, 100)}
         if branch:
             params["sha"] = branch
 
-        resp = await self._request("GET", f"/repos/{owner}/{repo}/commits", params=params)
-        commits_data = resp.json()
+        try:
+            resp = await self._request("GET", f"/repos/{owner}/{repo}/commits", params=params)
+            commits_data = resp.json()
 
-        commits: List[GitHubCommit] = []
-        for c in commits_data:
-            if not isinstance(c, dict):
-                continue
-            sha = c["sha"]
-            commit_obj = c.get("commit", {})
-            author_obj = commit_obj.get("author", {})
-            commits.append(
-                GitHubCommit(
-                    sha=sha,
-                    short_sha=sha[:7],
-                    message=commit_obj.get("message", "").splitlines()[0] if commit_obj.get("message") else "",
-                    author_name=author_obj.get("name", "Unknown"),
-                    author_email=author_obj.get("email"),
-                    date=author_obj.get("date", ""),
-                    html_url=c.get("html_url"),
+            commits: List[GitHubCommit] = []
+            for c in commits_data:
+                if not isinstance(c, dict):
+                    continue
+                sha = c["sha"]
+                commit_obj = c.get("commit", {})
+                author_obj = commit_obj.get("author", {})
+                commits.append(
+                    GitHubCommit(
+                        sha=sha,
+                        short_sha=sha[:7],
+                        message=commit_obj.get("message", "").splitlines()[0] if commit_obj.get("message") else "",
+                        author_name=author_obj.get("name", "Unknown"),
+                        author_email=author_obj.get("email"),
+                        date=author_obj.get("date", ""),
+                        html_url=c.get("html_url"),
+                    )
                 )
-            )
-        return commits
+            if use_cache:
+                _GITHUB_CACHE[cache_key] = (now, commits)
+            return commits
+        except GitHubRateLimitError:
+            if cache_key in _GITHUB_CACHE:
+                logger.warning("GitHub rate limit hit; serving cached commits for %s/%s", owner, repo)
+                return _GITHUB_CACHE[cache_key][1]
+            raise
 
     async def get_file_tree(
         self, owner: str, repo: str, tree_sha: str = "HEAD", recursive: bool = True
@@ -421,6 +504,11 @@ class GitHubService(BaseGitHubService):
             encoding=encoding,
             content=decoded_content,
         )
+
+
+def get_default_github_service() -> BaseGitHubService:
+    """Return a GitHubService configured with the server-level token for worker/background tasks."""
+    return GitHubService(token=settings.github_token)
 
 
 async def get_github_service(

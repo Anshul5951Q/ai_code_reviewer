@@ -18,12 +18,13 @@ from app.github.oauth import (
     oauth_state_manager,
     save_or_update_connection,
 )
-from app.github.service import BaseGitHubService, GitHubService, get_github_service
+from app.github.service import BaseGitHubService, GitHubService, get_github_service, get_default_github_service
 
 __all__ = [
     "BaseGitHubService",
     "GitHubService",
     "get_github_service",
+    "get_default_github_service",
     "GitHubHttpClient",
     "GitHubError",
     "GitHubAuthError",

@@ -8,6 +8,7 @@ Calculates deterministic review scores based on findings count, severity, and co
 from __future__ import annotations
 
 import difflib
+import hashlib
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
@@ -32,6 +33,8 @@ class CanonicalFinding:
     type: Optional[str] = None
     source: str = "code_review_agent"
     status: str = "open"
+    provenance: List[str] = field(default_factory=list)
+    fingerprint: Optional[str] = None
 
     def to_dict(self) -> dict:
         return {
@@ -48,6 +51,8 @@ class CanonicalFinding:
             "type": self.type,
             "source": self.source,
             "status": self.status,
+            "provenance": self.provenance,
+            "fingerprint": self.fingerprint,
         }
 
 
@@ -158,9 +163,10 @@ def merge_duplicates(f1: CanonicalFinding, f2: CanonicalFinding) -> CanonicalFin
     cwe = f1.cwe or f2.cwe
     finding_type = f1.type or f2.type
 
-    # Track combined source
+    # Track combined source and provenance
     sources = set(f1.source.split(" + ") + f2.source.split(" + "))
     combined_source = " + ".join(sorted(sources))
+    combined_provenance = list(sorted(set(f1.provenance + f2.provenance + list(sources))))
 
     # Bounded lines
     s_line = min(f1.start_line or 999999, f2.start_line or 999999)
@@ -169,6 +175,11 @@ def merge_duplicates(f1: CanonicalFinding, f2: CanonicalFinding) -> CanonicalFin
     e_line = max(f1.end_line or 0, f2.end_line or 0)
     if e_line == 0:
         e_line = None
+
+    # Compute deterministic fingerprint
+    bucket = (s_line or 0) // 5
+    canon_key = f"{f1.file_path or f2.file_path}:{bucket}:{cwe or finding_type or f1.category}"
+    fingerprint = hashlib.sha256(canon_key.encode()).hexdigest()[:16]
 
     return CanonicalFinding(
         category=f1.category if f1.category == "security" else f2.category,
@@ -184,6 +195,8 @@ def merge_duplicates(f1: CanonicalFinding, f2: CanonicalFinding) -> CanonicalFin
         type=finding_type,
         source=combined_source,
         status="open",
+        provenance=combined_provenance,
+        fingerprint=fingerprint,
     )
 
 
@@ -201,6 +214,11 @@ class FindingNormalizer:
                 start_l = raw.get("line_number")
                 end_l = raw.get("line_number")
 
+            source_str = raw.get("source", "code_review_agent")
+            bucket = (int(start_l) if start_l is not None else 0) // 5
+            canon_key = f"{raw.get('file_path')}:{bucket}:{raw.get('cwe') or raw.get('type') or raw.get('category')}"
+            fingerprint = hashlib.sha256(canon_key.encode()).hexdigest()[:16]
+
             nf = CanonicalFinding(
                 category=normalize_category(raw.get("category", "quality")),
                 severity=normalize_severity(raw.get("severity", "medium")),
@@ -213,8 +231,10 @@ class FindingNormalizer:
                 evidence=raw.get("evidence"),
                 cwe=raw.get("cwe"),
                 type=raw.get("type"),
-                source=raw.get("source", "code_review_agent"),
+                source=source_str,
                 status=raw.get("status", "open"),
+                provenance=[source_str],
+                fingerprint=fingerprint,
             )
             normalized.append(nf)
         return normalized
@@ -241,12 +261,30 @@ class FindingNormalizer:
         self,
         findings: List[CanonicalFinding],
         architecture_risks_count: int = 0,
-    ) -> Dict[str, float]:
+        files_analyzed_count: Optional[int] = None,
+        total_eligible_source_files: Optional[int] = None,
+    ) -> Dict[str, Any]:
         """
-        Calculate deterministic scores from 0.0 to 100.0 based on findings.
+        Calculate deterministic scores from 0.0 to 100.0 based on findings and analysis coverage.
 
-        Formula: 100.0 - severity-weighted deductions scaled by confidence.
+        Coverage-aware rules:
+        1. Zero findings with zero analyzed files must NEVER produce 100% (produces 0.0% + INSUFFICIENT COVERAGE).
+        2. Zero findings after sufficient analysis produces a high score labeled 'NO VULNERABILITIES DETECTED IN ANALYZED SCOPE'.
+        3. Security score and analysis coverage are tracked and reported separately.
         """
+        # If files_analyzed_count is explicitly 0, analysis coverage is insufficient
+        if files_analyzed_count == 0:
+            return {
+                "overall_score": 0.0,
+                "security_score": 0.0,
+                "quality_score": 0.0,
+                "architecture_score": 0.0,
+                "coverage_percentage": 0.0,
+                "security_posture_label": "INSUFFICIENT ANALYSIS COVERAGE",
+                "coverage_status": "INSUFFICIENT ANALYSIS COVERAGE",
+                "files_analyzed_count": 0,
+            }
+
         sec_deductions = {
             "critical": 25.0,
             "high": 15.0,
@@ -285,9 +323,36 @@ class FindingNormalizer:
         )
         overall_score = round(max(0.0, min(100.0, overall)), 1)
 
+        # Coverage percentage
+        if total_eligible_source_files and total_eligible_source_files > 0 and files_analyzed_count is not None:
+            cov_pct = round(min(100.0, (files_analyzed_count / total_eligible_source_files) * 100.0), 1)
+        elif files_analyzed_count is not None:
+            cov_pct = 100.0 if files_analyzed_count > 0 else 0.0
+        else:
+            cov_pct = 100.0  # Backward-compatible default for mock unit tests
+
+        # Transparent security posture label
+        sec_findings_count = len([f for f in findings if f.category == "security"])
+        if sec_findings_count == 0:
+            security_posture_label = "NO VULNERABILITIES DETECTED IN ANALYZED SCOPE"
+        else:
+            security_posture_label = f"{sec_findings_count} VULNERABILITIES DETECTED"
+
+        if cov_pct < 40.0:
+            cov_status = "INSUFFICIENT ANALYSIS COVERAGE"
+        elif cov_pct < 80.0:
+            cov_status = "PARTIAL ANALYSIS COVERAGE"
+        else:
+            cov_status = "ADEQUATE ANALYSIS COVERAGE"
+
         return {
             "overall_score": overall_score,
             "security_score": security_score,
             "quality_score": quality_score,
             "architecture_score": architecture_score,
+            "coverage_percentage": cov_pct,
+            "security_posture_label": security_posture_label,
+            "coverage_status": cov_status,
+            "coverage_summary": security_posture_label,
+            "files_analyzed_count": files_analyzed_count,
         }

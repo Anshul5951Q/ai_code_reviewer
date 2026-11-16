@@ -1,19 +1,40 @@
 'use client';
 
 import { useEffect, useState, useMemo } from 'react';
+import dynamic from 'next/dynamic';
 import { AlertTriangle, Shield, CheckCircle, ShieldAlert } from 'lucide-react';
 import { PageHeader } from '@/components/layout/page-header';
 import { MetricCard } from '@/components/dashboard/metric-card';
 import { SecurityScore } from '@/components/security/security-score';
-import { SeverityBreakdown } from '@/components/security/severity-breakdown';
-import { SecurityTrend } from '@/components/security/security-trend';
 import { VulnerabilityCard } from '@/components/security/vulnerability-card';
 import { RemediationPanel } from '@/components/remediation/remediation-panel';
 import { EmptyState } from '@/components/common/empty-state';
-import { LoadingState } from '@/components/common/loading-state';
+import { ChartSkeleton } from '@/components/common/chart-skeleton';
 import { getReviews, getSecurityFindings, getSecuritySummary } from '@/lib/api';
 import type { SecuritySummary, Finding } from '@/types/security';
 import type { Review } from '@/types/review';
+
+const SeverityBreakdown = dynamic(
+  () =>
+    import('@/components/security/severity-breakdown').then(
+      (mod) => mod.SeverityBreakdown,
+    ),
+  {
+    loading: () => <ChartSkeleton height={180} />,
+    ssr: false,
+  },
+);
+
+const SecurityTrend = dynamic(
+  () =>
+    import('@/components/security/security-trend').then(
+      (mod) => mod.SecurityTrend,
+    ),
+  {
+    loading: () => <ChartSkeleton height={180} />,
+    ssr: false,
+  },
+);
 
 const DEFAULT_SUMMARY: SecuritySummary = {
   overall_score: null,
@@ -70,7 +91,31 @@ export function SecurityView() {
   }, []);
 
   if (loading) {
-    return <LoadingState message="Loading security posture..." />;
+    return (
+      <div className="animate-pulse">
+        <PageHeader
+          title="Security"
+          description="Security posture and vulnerability overview across your repositories."
+        />
+        <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-6">
+          {[...Array(4)].map((_, i) => (
+            <div key={i} className="card flex flex-col gap-3">
+              <div className="flex items-center justify-between">
+                <div className="h-3 w-20 rounded bg-white/5" />
+                <div className="w-7 h-7 rounded bg-white/5" />
+              </div>
+              <div className="h-7 w-16 rounded bg-white/5" />
+              <div className="h-3 w-24 rounded bg-white/5" />
+            </div>
+          ))}
+        </div>
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 mb-6">
+          <div className="card h-48 rounded bg-white/5" />
+          <ChartSkeleton height={180} />
+          <ChartSkeleton height={180} />
+        </div>
+      </div>
+    );
   }
 
   return (

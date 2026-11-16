@@ -71,8 +71,14 @@ class AnalysisJob(Base):
     @property
     def is_active(self) -> bool:
         """True if the job is in a non-terminal state."""
-        return self.status in {"queued", "ingesting", "indexing", "analyzing"}
+        norm = (self.status or "").lower()
+        return norm in {
+            "queued", "ingesting", "indexing", "analyzing", "running",
+            "understanding", "correlating", "pending", "snapshotting",
+            "quality_analysis", "security_analysis"
+        }
 
     @property
     def is_terminal(self) -> bool:
-        return self.status in {"completed", "failed", "cancelled"}
+        norm = (self.status or "").lower()
+        return norm in {"completed", "failed", "cancelled", "partially_completed", "analysis_completed"}

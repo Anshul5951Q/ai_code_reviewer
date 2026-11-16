@@ -20,6 +20,7 @@ from app.github import (
     get_authenticated_user_profile,
     get_authorization_url,
     get_github_service,
+    get_default_github_service,
     oauth_state_manager,
     save_or_update_connection,
 )
@@ -28,6 +29,7 @@ __all__ = [
     "BaseGitHubService",
     "GitHubService",
     "get_github_service",
+    "get_default_github_service",
     "GitHubHttpClient",
     "GitHubError",
     "GitHubAuthError",

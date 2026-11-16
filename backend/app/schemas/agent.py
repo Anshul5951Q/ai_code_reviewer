@@ -44,3 +44,12 @@ class StartPhase5AnalysisResponse(BaseModel):
     review_id: str
     status: str
     message: str
+
+
+class GateAuditResponse(BaseModel):
+    """Aggregated verification gate audit reports for a review."""
+
+    review_id: str
+    gate_1: Optional[Dict[str, Any]] = None
+    gate_2: Optional[Dict[str, Any]] = None
+    gate_3: Optional[Dict[str, Any]] = None

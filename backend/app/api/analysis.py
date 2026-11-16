@@ -11,11 +11,11 @@ from __future__ import annotations
 import uuid
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from app.db.session import get_db
+from app.db.session import get_db, get_session_maker
 from app.models.analysis_job import AnalysisJob
 from app.models.repository_snapshot import RepositorySnapshot
 from app.models.review import Review
@@ -33,14 +33,19 @@ router = APIRouter(tags=["Analysis"])
 )
 async def start_analysis(
     review_id: str,
+    wait: bool = Query(False, description="Whether to wait synchronously for analysis completion"),
+    force: bool = Query(False, description="Force restart analysis even if existing job is completed or stale"),
     db: AsyncSession = Depends(get_db),
+    maker: async_sessionmaker = Depends(get_session_maker),
 ) -> StartAnalysisResponse:
     """
-    Start or resume repository ingestion for a review.
+    Start or resume end-to-end repository ingestion and multi-agent code analysis for a review.
 
     Idempotent: if an active job already exists for this review,
-    returns its status instead of creating a duplicate.
+    returns its status instead of creating a duplicate, unless force=True or job is dead.
     """
+    from app.workers.review_worker import is_job_active
+
     # Verify review exists
     review_res = await db.execute(select(Review).where(Review.id == review_id))
     review = review_res.scalar_one_or_none()
@@ -59,19 +64,41 @@ async def start_analysis(
     existing_job = existing_res.scalar_one_or_none()
 
     if existing_job is not None and existing_job.is_active:
+        if force:
+            # Force restart: always mark existing job as superseded
+            existing_job.status = "failed"
+            existing_job.error = "Superceded by forced restart."
+            existing_job.completed_at = datetime.now(timezone.utc)
+            await db.commit()
+        elif is_job_active(existing_job.id):
+            # Job is genuinely active in the worker process
+            return StartAnalysisResponse(
+                job_id=existing_job.id,
+                review_id=review_id,
+                status=existing_job.status,
+                message="Analysis already in progress.",
+            )
+        elif existing_job.status == "queued":
+            # Queued but not yet picked up by worker — treat as active (idempotent)
+            return StartAnalysisResponse(
+                job_id=existing_job.id,
+                review_id=review_id,
+                status=existing_job.status,
+                message="Analysis already in progress (queued).",
+            )
+        else:
+            # Job is in analyzing/ingesting state but not registered in worker — zombie
+            existing_job.status = "failed"
+            existing_job.error = "Analysis interrupted by server restart."
+            existing_job.completed_at = datetime.now(timezone.utc)
+            await db.commit()
+
+    if existing_job is not None and existing_job.status in ("completed", "partially_completed") and not force:
         return StartAnalysisResponse(
             job_id=existing_job.id,
             review_id=review_id,
             status=existing_job.status,
-            message="Analysis already in progress.",
-        )
-
-    if existing_job is not None and existing_job.status == "completed":
-        return StartAnalysisResponse(
-            job_id=existing_job.id,
-            review_id=review_id,
-            status="completed",
-            message="Analysis already completed. View snapshot for results.",
+            message="Analysis already completed. View snapshot and findings for results.",
         )
 
     # Create new job
@@ -79,14 +106,51 @@ async def start_analysis(
         id=str(uuid.uuid4()),
         review_id=review_id,
         status="queued",
-        current_stage=None,
+        current_stage="PENDING",
         progress=0.0,
     )
     db.add(job)
     await db.commit()
     await db.refresh(job)
 
-    # Enqueue
+    # If synchronous execution requested
+    if wait:
+        try:
+            from app.workers.review_worker import resolve_worker_github_service
+            from app.analysis.ingestion import IngestionPipeline
+            from app.agents.orchestrator import AnalysisOrchestrator
+
+            gh_service = await resolve_worker_github_service(maker, job.id)
+            ingested_files = None
+
+            # 1. Ingestion if snapshot not yet present
+            snap_res = await db.execute(
+                select(RepositorySnapshot).where(RepositorySnapshot.review_id == review_id)
+            )
+            if snap_res.scalar_one_or_none() is None:
+                pipeline = IngestionPipeline(github_service=gh_service)
+                ingested_files = await pipeline.run(job_id=job.id, session_maker=maker)
+
+            # 2. Multi-agent review orchestrator
+            orchestrator = AnalysisOrchestrator(github_service=gh_service)
+            await orchestrator.run(
+                review_id=review_id, session_maker=maker, job_id=job.id, files=ingested_files
+            )
+
+            await db.refresh(job)
+            return StartAnalysisResponse(
+                job_id=job.id,
+                review_id=review_id,
+                status=job.status,
+                message="Analysis completed successfully.",
+            )
+        except Exception as exc:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Analysis orchestrator failed: {str(exc)}",
+            )
+
+    # Enqueue for background worker
     await analysis_queue.enqueue(job.id)
 
     return StartAnalysisResponse(

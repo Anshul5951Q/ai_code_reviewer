@@ -1,7 +1,8 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useMemo } from 'react';
 import Link from 'next/link';
+import dynamic from 'next/dynamic';
 import {
   GitBranch,
   ClipboardList,
@@ -11,12 +12,11 @@ import {
 } from 'lucide-react';
 import { PageHeader } from '@/components/layout/page-header';
 import { MetricCard } from '@/components/dashboard/metric-card';
-import { ReviewActivityChart } from '@/components/dashboard/review-activity-chart';
-import { SecurityTrendChart } from '@/components/dashboard/security-trend-chart';
 import { RecentReviews } from '@/components/dashboard/recent-reviews';
 import { CriticalFindings } from '@/components/dashboard/critical-findings';
 import { RepositoryHealth } from '@/components/dashboard/repository-health';
-import { LoadingState } from '@/components/common/loading-state';
+import { ChartSkeleton } from '@/components/common/chart-skeleton';
+import { DashboardSkeleton } from '@/components/dashboard/dashboard-skeleton';
 import {
   getRepositories,
   getReviews,
@@ -26,6 +26,29 @@ import {
 import type { Repository, RepositoryHealth as RepoHealth } from '@/types/repository';
 import type { Review } from '@/types/review';
 import type { Finding, SecuritySummary } from '@/types/security';
+
+// Code-split heavy chart libraries
+const ReviewActivityChart = dynamic(
+  () =>
+    import('@/components/dashboard/review-activity-chart').then(
+      (mod) => mod.ReviewActivityChart,
+    ),
+  {
+    loading: () => <ChartSkeleton height={160} />,
+    ssr: false,
+  },
+);
+
+const SecurityTrendChart = dynamic(
+  () =>
+    import('@/components/dashboard/security-trend-chart').then(
+      (mod) => mod.SecurityTrendChart,
+    ),
+  {
+    loading: () => <ChartSkeleton height={160} />,
+    ssr: false,
+  },
+);
 
 export function DashboardView() {
   const [repositories, setRepositories] = useState<Repository[]>([]);
@@ -57,29 +80,35 @@ export function DashboardView() {
     loadDashboard();
   }, []);
 
-  if (loading) {
-    return <LoadingState message="Loading dashboard metrics..." />;
-  }
+  const completedReviewsCount = useMemo(
+    () => reviews.filter((r) => r.status === 'completed').length,
+    [reviews],
+  );
 
-  const completedReviewsCount = reviews.filter((r) => r.status === 'completed').length;
-  const repoHealthItems: RepoHealth[] = repositories.map((r) => {
-    const repoReviews = reviews.filter((rev) => rev.repository_id === r.id);
-    const latestReview = repoReviews[0];
-    return {
-      repository: r.full_name,
-      overall_score: latestReview?.overall_score ?? null,
-      security_score: latestReview?.security_score ?? null,
-      quality_score: latestReview?.quality_score ?? null,
-      last_review: latestReview?.created_at ?? null,
-      status: latestReview
-        ? (latestReview.overall_score ?? 100) > 80
-          ? 'healthy'
-          : (latestReview.overall_score ?? 100) > 60
-          ? 'warning'
-          : 'critical'
-        : 'unknown',
-    };
-  });
+  const repoHealthItems: RepoHealth[] = useMemo(() => {
+    return repositories.map((r) => {
+      const repoReviews = reviews.filter((rev) => rev.repository_id === r.id);
+      const latestReview = repoReviews[0];
+      return {
+        repository: r.full_name,
+        overall_score: latestReview?.overall_score ?? null,
+        security_score: latestReview?.security_score ?? null,
+        quality_score: latestReview?.quality_score ?? null,
+        last_review: latestReview?.created_at ?? null,
+        status: latestReview
+          ? (latestReview.overall_score ?? 100) > 80
+            ? 'healthy'
+            : (latestReview.overall_score ?? 100) > 60
+            ? 'warning'
+            : 'critical'
+          : 'unknown',
+      };
+    });
+  }, [repositories, reviews]);
+
+  if (loading) {
+    return <DashboardSkeleton />;
+  }
 
   return (
     <div>
@@ -156,7 +185,7 @@ export function DashboardView() {
 
       {/* Charts Row */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-3 mb-6">
-        <ReviewActivityChart />
+        <ReviewActivityChart reviews={reviews} />
         <SecurityTrendChart
           data={reviews
             .filter((r) => r.security_score !== null)

@@ -1,4 +1,4 @@
-import { type ReactNode } from 'react';
+import { memo, type ReactNode } from 'react';
 import { TrendingUp, TrendingDown, Minus } from 'lucide-react';
 import { cn } from '@/lib/utils';
 
@@ -22,7 +22,7 @@ const TREND_STYLES: Record<TrendDirection, { color: string; Icon: typeof Trendin
   neutral: { color: 'var(--text-tertiary)', Icon: Minus },
 };
 
-export function MetricCard({
+export const MetricCard = memo(function MetricCard({
   title,
   value,
   description,
@@ -79,4 +79,4 @@ export function MetricCard({
       </div>
     </div>
   );
-}
+});

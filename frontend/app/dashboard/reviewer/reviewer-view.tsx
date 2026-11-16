@@ -21,6 +21,7 @@ import { formatRelativeTime } from '@/lib/utils';
 import {
   ApiClientError,
   createReview,
+  startAnalysis,
   getGitHubStatus,
   getRepoBranches,
   getRepoCommits,
@@ -99,11 +100,12 @@ export function ReviewerView() {
   }, [initialRepoParam]);
 
   // 2. Load branches when selectedRepoId changes
+  const targetRepoDefaultBranch = repositories.find((r) => r.id === selectedRepoId)?.default_branch;
+
   useEffect(() => {
     if (!selectedRepoId) return;
 
     let ignore = false;
-    const targetRepo = repositories.find((r) => r.id === selectedRepoId);
 
     getRepoBranches(selectedRepoId)
       .then((branchList) => {
@@ -112,7 +114,7 @@ export function ReviewerView() {
 
         if (branchList.length > 0) {
           const defaultBranchMatch = branchList.find(
-            (b) => b.name === targetRepo?.default_branch,
+            (b) => b.name === targetRepoDefaultBranch,
           );
           const chosen = defaultBranchMatch ? defaultBranchMatch.name : branchList[0].name;
           setSelectedBranch(chosen);
@@ -134,7 +136,7 @@ export function ReviewerView() {
     return () => {
       ignore = true;
     };
-  }, [selectedRepoId, repositories]);
+  }, [selectedRepoId, targetRepoDefaultBranch]);
 
   // 3. Load commits when selectedBranch changes
   useEffect(() => {
@@ -205,10 +207,28 @@ export function ReviewerView() {
         commit_sha: selectedCommitSha,
         branch: selectedBranch,
       });
-      // Navigate to the review detail page with analysis progress
+
+      if (!rev?.id) {
+        throw new Error('Review was created but no valid review ID was returned from server.');
+      }
+
+      // Automatically trigger unified analysis pipeline
+      try {
+        await startAnalysis(rev.id);
+      } catch (analyzeErr) {
+        console.warn('Initial analysis initiation:', analyzeErr);
+      }
+
+      // Navigate to the review detail page with validated review ID
       router.push(`/dashboard/reviews/${rev.id}`);
     } catch (e: unknown) {
-      setErrorMessage(e instanceof ApiClientError ? e.detail : 'Failed to schedule code review');
+      setErrorMessage(
+        e instanceof ApiClientError
+          ? e.detail
+          : e instanceof Error
+          ? e.message
+          : 'Failed to schedule code review',
+      );
     } finally {
       setSubmittingReview(false);
     }

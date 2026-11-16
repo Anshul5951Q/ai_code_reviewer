@@ -9,6 +9,7 @@ from __future__ import annotations
 import logging
 from typing import Optional
 
+from app.analysis.patch_risk import calculate_patch_risk
 from app.llm.client import get_llm_provider
 from app.llm.prompts import REMEDIATION_PROMPT_VERSION, REMEDIATION_SYSTEM_PROMPT
 from app.llm.provider import LLMProvider
@@ -72,6 +73,23 @@ class RemediationAgent:
             if diffs:
                 plan.unified_diff = "\n".join(diffs)
 
+        # Attach root-cause intelligence and proposed solution if not set
+        if not plan.root_cause and context.root_cause:
+            plan.root_cause = context.root_cause
+        if not plan.proposed_solution:
+            plan.proposed_solution = plan.strategy
+        if not plan.expected_behavior:
+            plan.expected_behavior = f"Remediates {context.category} issue while preserving function interface and caller contracts."
+
+        # Calculate deterministic patch risk assessment
+        plan.risk_assessment = calculate_patch_risk(
+            files_changed=plan.files_changed or [context.file_path],
+            diff=plan.unified_diff or "",
+            category=context.category,
+            cwe=context.cwe,
+            finding_title=context.title,
+        )
+
         return plan
 
     def _build_prompt(self, ctx: RemediationContext) -> str:
@@ -80,7 +98,7 @@ class RemediationAgent:
         deps_str = ", ".join(dep_names) if dep_names else "Standard libraries"
 
         prompt_parts = [
-            f"FINDING DETAILS:",
+            "FINDING DETAILS:",
             f"- Title: {ctx.title}",
             f"- Category: {ctx.category}",
             f"- Type: {ctx.type or 'unspecified'}",
@@ -93,6 +111,16 @@ class RemediationAgent:
             f"- Key Dependencies: {deps_str}",
             f"- Description: {ctx.description}",
         ]
+
+        if ctx.root_cause:
+            prompt_parts.append(f"- Underlying Root Cause: {ctx.root_cause}")
+
+        if ctx.constituent_findings:
+            prompt_parts.append(f"\nRELATED FINDINGS IN CORRELATED CLUSTER ({len(ctx.constituent_findings)}):")
+            for cf in ctx.constituent_findings[:5]:
+                prompt_parts.append(
+                    f"  * [{cf.get('source', 'agent')}] {cf.get('title')} ({cf.get('category')}/{cf.get('severity')}) at {cf.get('file_path')}:{cf.get('start_line')}"
+                )
 
         if ctx.evidence:
             prompt_parts.append(f"\nDETECTED EVIDENCE:\n```\n{ctx.evidence}\n```")
@@ -108,9 +136,15 @@ class RemediationAgent:
                 prompt_parts.append(f"- Previous Inadequate Diff:\n```\n{ctx.previous_attempt.get('diff')}\n```")
             prompt_parts.append("DO NOT repeat the previous flawed pattern. Address the root cause directly.")
 
-        prompt_parts.append("\nINSTRUCTIONS:")
-        prompt_parts.append("1. Provide the exact original code to replace from the source.")
-        prompt_parts.append("2. Provide the clean, secure replacement code.")
-        prompt_parts.append("3. Make the smallest necessary change to eliminate the issue safely.")
+        prompt_parts.append("\nREMEDIATION STRATEGY REQUIREMENTS:")
+        prompt_parts.append("1. Fix the actual root cause rather than suppressing symptoms.")
+        prompt_parts.append("   - SQL Injection: Use parameterized query placeholders (%s, :param), not string concatenation.")
+        prompt_parts.append("   - Command Injection: Use safe argument list arrays (subprocess.run(['cmd', arg])), avoid shell=True.")
+        prompt_parts.append("   - Path Traversal: Validate against allowed root directory using canonicalized absolute paths.")
+        prompt_parts.append("   - Hardcoded Secrets: Extract to os.environ or configuration lookup; do not invent fake keys.")
+        prompt_parts.append("   - XSS: Use framework-safe text escaping or textContent; avoid raw innerHTML.")
+        prompt_parts.append("2. Preserve existing functionality and interface contracts.")
+        prompt_parts.append("3. Minimize unnecessary changes. Do NOT perform broad refactoring or unrelated formatting churn.")
+        prompt_parts.append("4. Provide the exact original code to replace from the source, and the replacement code.")
 
         return "\n".join(prompt_parts)

@@ -12,10 +12,12 @@ from app.models.base import Base
 if TYPE_CHECKING:
     from app.models.agent_run import AgentRun
     from app.models.analysis_job import AnalysisJob
+    from app.models.correlated_finding import CorrelatedFinding
     from app.models.finding import Finding
     from app.models.remediation_run import RemediationRun
     from app.models.repository import Repository
     from app.models.repository_snapshot import RepositorySnapshot
+    from app.models.verification_run import VerificationRun
 
 
 class Review(Base):
@@ -70,6 +72,12 @@ class Review(Base):
     )
     remediation_runs: Mapped[List["RemediationRun"]] = relationship(
         "RemediationRun", back_populates="review", cascade="all, delete-orphan"
+    )
+    correlated_findings: Mapped[List["CorrelatedFinding"]] = relationship(
+        "CorrelatedFinding", back_populates="review", cascade="all, delete-orphan"
+    )
+    verification_runs: Mapped[List["VerificationRun"]] = relationship(
+        "VerificationRun", back_populates="review", cascade="all, delete-orphan"
     )
 
     def __repr__(self) -> str:

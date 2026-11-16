@@ -96,6 +96,24 @@ class AnalysisQueue:
             logger.warning(f"Redis recovery failed: {exc}")
             return 0
 
+    @property
+    def is_durable(self) -> bool:
+        """Whether the queue is backed by durable Redis storage."""
+        return self._redis is not None
+
+    def get_status(self) -> dict[str, object]:
+        """Return operational details and backend type."""
+        return {
+            "backend": "redis" if self._redis is not None else "in_memory_fallback",
+            "durable": self._redis is not None,
+            "pending_in_process_jobs": self._queue.qsize(),
+            "warning": (
+                None
+                if self._redis is not None
+                else "In-memory queue fallback active. Jobs will not persist across restarts."
+            ),
+        }
+
     async def close(self) -> None:
         """Close Redis connection if open."""
         if self._redis is not None:

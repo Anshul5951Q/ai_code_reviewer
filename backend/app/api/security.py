@@ -55,7 +55,7 @@ async def get_security_summary(
 
         if remediation_runs_count > 0:
             verified_q = select(func.count()).select_from(RemediationRun).where(
-                RemediationRun.verification_status == "resolved"
+                (RemediationRun.gate_5_decision == "RESOLVED") | (RemediationRun.verification_status == "resolved")
             )
             verified_count = (await db.execute(verified_q)).scalar() or 0
             verification_success_rate = round((verified_count / remediation_runs_count) * 100, 1)

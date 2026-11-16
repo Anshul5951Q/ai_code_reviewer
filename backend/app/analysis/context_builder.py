@@ -73,7 +73,9 @@ class ContextBuilder:
         dependencies = self._parse_snapshot_json(snapshot.dependencies, [])
         structure = self._parse_snapshot_json(snapshot.structure, {})
 
-        repo_name = review.repository.full_name if review.repository else "repository"
+        # Safely resolve repository name without triggering SQLAlchemy lazy-load greenlet error
+        repo = review.__dict__.get("repository") or getattr(review, "repository", None)
+        repo_name = getattr(repo, "full_name", None) or "repository"
 
         statistics = {
             "total_files": snapshot.total_files or len(all_files),
@@ -136,6 +138,18 @@ class ContextBuilder:
         max_tokens: int = 30000,
     ) -> AnalysisContext:
         """Context for Code Review Agent."""
+        return self.build_code_quality_context(
+            review=review, snapshot=snapshot, all_files=all_files, max_tokens=max_tokens
+        )
+
+    def build_code_quality_context(
+        self,
+        review: Review,
+        snapshot: RepositorySnapshot,
+        all_files: Dict[str, str],
+        max_tokens: int = 30000,
+    ) -> AnalysisContext:
+        """Context for Code Quality Agent."""
         kwargs = self._base_context_kwargs(review, snapshot, all_files)
         clean_files = kwargs.pop("_clean_files")
 
@@ -145,7 +159,7 @@ class ContextBuilder:
         chunks = chunk_files(selected, max_lines=150, overlap=20)
 
         return AnalysisContext(
-            agent_type="code_review",
+            agent_type="code_quality",
             selected_files=selected,
             chunks=chunks,
             **kwargs,
@@ -160,6 +174,23 @@ class ContextBuilder:
         max_tokens: int = 30000,
     ) -> AnalysisContext:
         """Context for Security Agent."""
+        return self.build_security_detection_context(
+            review=review,
+            snapshot=snapshot,
+            all_files=all_files,
+            static_findings=static_findings,
+            max_tokens=max_tokens,
+        )
+
+    def build_security_detection_context(
+        self,
+        review: Review,
+        snapshot: RepositorySnapshot,
+        all_files: Dict[str, str],
+        static_findings: Optional[List[Dict[str, Any]]] = None,
+        max_tokens: int = 30000,
+    ) -> AnalysisContext:
+        """Context for Security Detection Agent."""
         kwargs = self._base_context_kwargs(review, snapshot, all_files)
         clean_files = kwargs.pop("_clean_files")
 
