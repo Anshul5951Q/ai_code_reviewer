@@ -1,10 +1,21 @@
 export type AgentType =
   | 'code_understanding'
+  | 'code_quality'
   | 'code_review'
   | 'security_static'
   | 'security_agent';
 
-export type AgentStatus = 'queued' | 'running' | 'completed' | 'failed';
+export type AgentStatus =
+  | 'queued'
+  | 'running'
+  | 'analyzing'
+  | 'verifying'
+  | 'verified'
+  | 'verified_with_scrubbing'
+  | 'partially_completed'
+  | 'completed'
+  | 'failed';
+
 
 export interface AgentRun {
   id: string;

@@ -8,6 +8,12 @@ export type AnalysisStage =
   | 'dependency_analysis'
   | 'repository_intelligence'
   | 'snapshot_creation'
+  | 'understanding'
+  | 'verifying_understanding'
+  | 'quality_analysis'
+  | 'security_analysis'
+  | 'verifying_findings'
+  | 'correlating'
   | 'completed';
 
 export type AnalysisJobStatus =
@@ -53,11 +59,23 @@ export interface DependencyInfo {
   source_file: string;
 }
 
+export interface CoverageMetrics {
+  total_discovered: number;
+  total_eligible_source: number;
+  downloaded_count: number;
+  analyzed_count: number;
+  coverage_percentage: number;
+  coverage_status: string;
+  limitations: string[];
+}
+
 export interface RepositoryStructure {
   entry_points: string[];
   largest_files: Array<{ path: string; size: number; lines: number }>;
   directory_structure: Record<string, number>;
   total_dependencies: number;
+  coverage?: CoverageMetrics;
+  file_inventory?: Record<string, unknown>;
 }
 
 export interface RepositorySnapshot {
@@ -86,6 +104,12 @@ export const STAGE_LABELS: Record<AnalysisStage, string> = {
   dependency_analysis: 'Analyzing Dependencies',
   repository_intelligence: 'Building Repository Map',
   snapshot_creation: 'Creating Snapshot',
+  understanding: 'Code Understanding & Architecture',
+  verifying_understanding: 'Gate 1 Verification',
+  quality_analysis: 'Code Quality Analysis',
+  security_analysis: 'Security Vulnerability Detection',
+  verifying_findings: 'Gates 2 & 3 Verification',
+  correlating: 'Finding Correlation & Intelligence',
   completed: 'Analysis Complete',
 };
 
@@ -97,5 +121,11 @@ export const STAGES_ORDER: AnalysisStage[] = [
   'dependency_analysis',
   'repository_intelligence',
   'snapshot_creation',
+  'understanding',
+  'verifying_understanding',
+  'quality_analysis',
+  'security_analysis',
+  'verifying_findings',
+  'correlating',
   'completed',
 ];

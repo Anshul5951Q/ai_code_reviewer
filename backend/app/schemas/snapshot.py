@@ -27,6 +27,10 @@ class RepositoryStructure(BaseModel):
     largest_files: List[Dict[str, Any]] = []
     directory_structure: Dict[str, int] = {}
     total_dependencies: int = 0
+    coverage: Optional[Dict[str, Any]] = None
+    file_inventory: Optional[Dict[str, Any]] = None
+
+    model_config = {"extra": "allow"}
 
 
 class RepositorySnapshotResponse(BaseModel):

@@ -25,9 +25,11 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.analysis.dependency_analyzer import analyze_dependencies
 from app.analysis.file_filter import FileFilter
+from app.analysis.inventory import FileInventory
 from app.analysis.language_detector import detect_languages
 from app.analysis.repository_intelligence import analyze_repository
 from app.analysis.snapshot import build_snapshot
+from app.analysis.workspace import AnalysisWorkspace
 from app.models.analysis_job import AnalysisJob
 from app.models.repository import Repository
 from app.models.repository_snapshot import RepositorySnapshot
@@ -89,12 +91,13 @@ class IngestionPipeline:
         self,
         job_id: str,
         session_maker: async_sessionmaker,
-    ) -> None:
+    ) -> Dict[str, str]:
         """
         Execute the full ingestion pipeline for job_id.
 
         Opens its own database sessions to avoid transaction conflicts with
         the background worker. All errors are caught and stored on the job.
+        Returns the dictionary of downloaded file contents.
         """
         async with session_maker() as db:
             # Load job + review + repository
@@ -102,7 +105,7 @@ class IngestionPipeline:
             job = job_res.scalar_one_or_none()
             if job is None:
                 logger.error(f"Ingestion: job {job_id!r} not found")
-                return
+                return {}
 
             review_res = await db.execute(select(Review).where(Review.id == job.review_id))
             review = review_res.scalar_one_or_none()
@@ -114,7 +117,7 @@ class IngestionPipeline:
                     error="Associated review not found.",
                     completed_at=datetime.now(timezone.utc),
                 )
-                return
+                return {}
 
             repo_res = await db.execute(
                 select(Repository).where(Repository.id == review.repository_id)
@@ -128,7 +131,7 @@ class IngestionPipeline:
                     error="Associated repository not found.",
                     completed_at=datetime.now(timezone.utc),
                 )
-                return
+                return {}
 
             # Mark started
             await _update_job(
@@ -143,7 +146,7 @@ class IngestionPipeline:
 
         # Run the pipeline in a new session per stage for clean state
         try:
-            await self._run_stages(job_id, session_maker, repo, review)
+            return await self._run_stages(job_id, session_maker, repo, review)
         except Exception as exc:
             logger.error(f"Ingestion pipeline error for job {job_id!r}: {exc}", exc_info=True)
             # Store safe error message
@@ -163,6 +166,7 @@ class IngestionPipeline:
                 if rev:
                     rev.status = "failed"
                     await db.commit()
+            return {}
 
     async def _run_stages(
         self,
@@ -193,12 +197,33 @@ class IngestionPipeline:
 
         logger.info(f"[Job {job_id[:8]}] Stage: file_filtering  tree_size={len(tree_items)}")
 
+        # Initialize canonical file inventory
+        inventory = FileInventory(review_id=review.id, commit_sha=commit_sha)
+
         # Only process blob (file) entries; skip tree (directory) entries
         blob_items = [item for item in tree_items if item.type == "blob"]
+        for item in blob_items:
+            is_src = self.file_filter.is_source_file(item.path) and not self.file_filter.is_test_file(item.path)
+            is_tst = self.file_filter.is_test_file(item.path)
+            is_cfg = self.file_filter.is_config_file(item.path)
+            inventory.add_discovered(
+                path=item.path,
+                size_bytes=item.size or 0,
+                is_source=is_src,
+                is_test=is_tst,
+                is_config=is_cfg,
+            )
+
         includable = [
             item for item in blob_items
             if self.file_filter.should_include(item.path, item.size)
         ]
+        # Record filtered items
+        includable_paths = {item.path for item in includable}
+        for item in blob_items:
+            if item.path not in includable_paths:
+                inventory.mark_filtered(item.path, reason="Excluded by size or vendor/binary filter rules.")
+
         # Limit number of files
         if len(includable) > MAX_FILES_TO_FETCH:
             logger.warning(
@@ -236,10 +261,16 @@ class IngestionPipeline:
                         owner=owner, repo=name, path=path, ref=commit_sha
                     )
                     file_contents[path] = result.content
-                except GitHubError:
+                    if result.content is not None:
+                        inventory.mark_downloaded(path, result.content)
+                    else:
+                        inventory.mark_failed(path, reason="Empty or null content returned from GitHub.")
+                except GitHubError as gh_err:
                     file_contents[path] = None
-                except Exception:
+                    inventory.mark_failed(path, reason=f"GitHub API Error: {gh_err}")
+                except Exception as ex:
                     file_contents[path] = None
+                    inventory.mark_failed(path, reason=f"Fetch failed: {ex}")
                 processed += 1
 
                 # Update progress every 10 files
@@ -260,6 +291,14 @@ class IngestionPipeline:
             # Empty repository
             file_contents = {}
 
+        # Save downloaded files to local review workspace cache
+        content_map = {p: c for p, c in file_contents.items() if c is not None}
+        try:
+            workspace = AnalysisWorkspace(review.id)
+            workspace.save_files(content_map)
+        except Exception as ws_err:
+            logger.warning(f"Could not cache files into AnalysisWorkspace: {ws_err}")
+
         # ── Stage 4: Language detection ──────────────────────────────────────
         logger.info(f"[Job {job_id[:8]}] Stage: language_detection")
         async with session_maker() as db:
@@ -277,8 +316,6 @@ class IngestionPipeline:
             if job:
                 await _update_job(db, job, stage="dependency_analysis", progress=75.0)
 
-        # Only pass files with content
-        content_map = {p: c for p, c in file_contents.items() if c is not None}
         dependencies = analyze_dependencies(content_map)
 
         # ── Stage 6: Repository intelligence ─────────────────────────────────
@@ -294,7 +331,7 @@ class IngestionPipeline:
             dependencies=dependencies,
         )
 
-        # ── Stage 7: Snapshot creation ────────────────────────────────────────
+        # ── Stage 7: Snapshot creation with Canonical Inventory ───────────────
         logger.info(f"[Job {job_id[:8]}] Stage: snapshot_creation")
         async with session_maker() as db:
             job = await _get_job(db, job_id)
@@ -307,6 +344,7 @@ class IngestionPipeline:
             branch=branch,
             intelligence=intelligence,
             dependencies=dependencies,
+            file_inventory=inventory,
         )
 
         # ── Persist snapshot and complete ─────────────────────────────────────
@@ -340,6 +378,7 @@ class IngestionPipeline:
             f"[Job {job_id[:8]}] Completed: "
             f"files={total_files} languages={len(languages)} deps={len(dependencies)}"
         )
+        return content_map
 
 
 async def _get_job(db: AsyncSession, job_id: str) -> Optional[AnalysisJob]:

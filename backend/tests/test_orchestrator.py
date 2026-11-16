@@ -102,7 +102,7 @@ def complex_business_flow(a, b, c):
     run_types = {r.agent_type for r in runs}
     assert "security_static" in run_types
     assert "code_understanding" in run_types
-    assert "code_review" in run_types
+    assert ("code_review" in run_types or "code_quality" in run_types)
     assert "security_agent" in run_types
     assert all(r.status == "completed" for r in runs)
 
@@ -152,10 +152,10 @@ async def test_orchestrator_partial_failure(db_session):
     await db_session.commit()
 
     class FailingReviewProvider(MockLLMProvider):
-        async def structured_output(self, prompt, schema_class, system=None):
-            if "review" in schema_class.__name__.lower():
+        async def structured_output(self, prompt, schema_class, system=None, options=None):
+            if "review" in schema_class.__name__.lower() or "quality" in schema_class.__name__.lower():
                 raise RuntimeError("LLM rate limit exceeded")
-            return await super().structured_output(prompt, schema_class, system)
+            return await super().structured_output(prompt, schema_class, system=system, options=options)
 
     orchestrator = AnalysisOrchestrator(provider=FailingReviewProvider())
     from tests.conftest import test_async_session_maker
@@ -172,7 +172,7 @@ async def test_orchestrator_partial_failure(db_session):
     # Check agent run reflects failed status
     failed_run = await db_session.execute(
         select(AgentRun)
-        .where(AgentRun.review_id == review_id, AgentRun.agent_type == "code_review")
+        .where(AgentRun.review_id == review_id, AgentRun.agent_type.in_(["code_review", "code_quality"]))
     )
     fr = failed_run.scalar_one()
     assert fr.status == "failed"

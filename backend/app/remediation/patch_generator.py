@@ -171,3 +171,122 @@ def generate_unified_diff(
         lineterm="\n",
     )
     return "".join(diff)
+
+
+class PatchGenerator:
+    """
+    Dedicated Patch Generation Service.
+    Produces parseable unified diffs strictly grounded against an existing repository snapshot.
+    """
+
+    PROTECTED_FILE_PATTERNS = [
+        re.compile(r"(?:^|/)\.env(?:$|\.)", re.IGNORECASE),
+        re.compile(r"(?:^|/)\.git(?:$|/)", re.IGNORECASE),
+        re.compile(r"\.(?:pem|key|crt)$", re.IGNORECASE),
+        re.compile(r"id_rsa", re.IGNORECASE),
+    ]
+
+    def __init__(self, max_files: int = 5, max_lines: int = 150, max_size_bytes: int = 50000) -> None:
+        self.max_files = max_files
+        self.max_lines = max_lines
+        self.max_size_bytes = max_size_bytes
+
+    def is_protected_file(self, file_path: str) -> bool:
+        clean = file_path.replace("\\", "/").strip()
+        return any(pat.search(clean) for pat in self.PROTECTED_FILE_PATTERNS)
+
+    def generate_patch(
+        self,
+        snapshot_files: Dict[str, str],
+        changes: List[Any],
+        patch_version: int = 1,
+    ) -> Tuple[str, List[str], Dict[str, str]]:
+        """
+        Apply a series of code changes against snapshot files and generate standard unified diff.
+
+        Returns:
+            Tuple of (unified_diff_string, modified_files_list, modified_contents_dict).
+        Raises:
+            PatchValidationError on safety or applicability failure.
+        """
+        if not changes:
+            raise PatchValidationError("No code changes provided to generate patch.")
+
+        modified_files: List[str] = []
+        modified_contents: Dict[str, str] = {}
+        diff_chunks: List[str] = []
+
+        # Group changes by file
+        from collections import defaultdict
+        file_changes = defaultdict(list)
+        for c in changes:
+            fp = getattr(c, "file_path", None) or (c.get("file_path") if isinstance(c, dict) else None)
+            if not fp:
+                raise PatchValidationError("Code change missing required 'file_path'.")
+            clean_p = sanitize_relative_path(fp)
+            file_changes[clean_p].append(c)
+
+        if len(file_changes) > self.max_files:
+            raise PatchValidationError(
+                f"Patch targets {len(file_changes)} files, exceeding limit of {self.max_files}."
+            )
+
+        for file_path, f_changes in file_changes.items():
+            if self.is_protected_file(file_path):
+                raise PatchValidationError(f"Modification of protected file '{file_path}' is strictly forbidden.")
+
+            # Validate target file exists in snapshot
+            if file_path not in snapshot_files:
+                # Attempt suffix match
+                matched = [k for k in snapshot_files if k.endswith(f"/{file_path}") or k == file_path]
+                if not matched:
+                    raise PatchValidationError(f"Target file '{file_path}' does not exist in repository snapshot.")
+                snapshot_key = matched[0]
+            else:
+                snapshot_key = file_path
+
+            original_content = snapshot_files[snapshot_key]
+            curr_content = original_content
+
+            for change in f_changes:
+                start_l = getattr(change, "start_line", None) or (change.get("start_line") if isinstance(change, dict) else 1)
+                end_l = getattr(change, "end_line", None) or (change.get("end_line") if isinstance(change, dict) else start_l)
+                orig_code = getattr(change, "original_code", None) or (change.get("original_code") if isinstance(change, dict) else "")
+                repl_code = getattr(change, "replacement_code", None) or (change.get("replacement_code") if isinstance(change, dict) else "")
+
+                # Stale patch verification
+                norm_orig = orig_code.strip()
+                if norm_orig and norm_orig not in curr_content:
+                    lines = curr_content.splitlines()
+                    s_idx = max(1, start_l) - 1
+                    e_idx = min(len(lines), end_l)
+                    target_chunk = "\n".join(lines[s_idx:e_idx]).strip()
+                    if norm_orig not in target_chunk and target_chunk not in norm_orig:
+                        raise PatchValidationError(
+                            f"Stale patch detected for '{file_path}': expected code snippet not found at lines {start_l}-{end_l}."
+                        )
+
+                curr_content = apply_code_change(
+                    original_content=curr_content,
+                    start_line=start_l,
+                    end_line=end_l,
+                    original_code=orig_code,
+                    replacement_code=repl_code,
+                )
+
+            diff = generate_unified_diff(file_path, original_content, curr_content)
+            if diff:
+                diff_chunks.append(diff)
+                modified_files.append(file_path)
+                modified_contents[file_path] = curr_content
+
+        unified_diff_str = "\n".join(diff_chunks)
+        validate_patch_safety(
+            file_paths=modified_files,
+            diff_text=unified_diff_str,
+            max_files=self.max_files,
+            max_lines=self.max_lines,
+            max_size_bytes=self.max_size_bytes,
+        )
+
+        return unified_diff_str, modified_files, modified_contents

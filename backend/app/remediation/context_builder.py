@@ -40,6 +40,11 @@ class RemediationContext:
     frameworks: List[str] = field(default_factory=list)
     dependencies: List[Dict[str, Any]] = field(default_factory=list)
 
+    # Sub-Phase 7.5 Correlated Finding & Root Cause Intelligence
+    correlated_finding_id: Optional[str] = None
+    root_cause: Optional[str] = None
+    constituent_findings: List[Dict[str, Any]] = field(default_factory=list)
+
     # Optional feedback from previous failed attempt
     previous_attempt: Optional[Dict[str, Any]] = None
 
@@ -60,6 +65,9 @@ class RemediationContext:
             "frameworks": self.frameworks,
             "evidence": self.evidence,
             "surrounding_code": self.surrounding_code,
+            "correlated_finding_id": self.correlated_finding_id,
+            "root_cause": self.root_cause,
+            "constituent_count": len(self.constituent_findings),
             "has_previous_attempt": self.previous_attempt is not None,
         }
 
@@ -129,11 +137,14 @@ def build_remediation_context(
     frameworks: Optional[List[str]] = None,
     dependencies: Optional[List[Dict[str, Any]]] = None,
     previous_attempt: Optional[Dict[str, Any]] = None,
+    correlated_finding: Optional[Any] = None,
+    constituent_findings: Optional[List[Dict[str, Any]]] = None,
+    root_cause: Optional[str] = None,
 ) -> RemediationContext:
     """
-    Build a safe, bounded RemediationContext instance for a finding.
+    Build a safe, bounded RemediationContext instance for a finding or correlated cluster.
     """
-    start_line = finding.start_line or finding.line_number or 1
+    start_line = finding.start_line or getattr(finding, "line_number", None) or 1
     end_line = finding.end_line or start_line
 
     # Primary language
@@ -147,7 +158,7 @@ def build_remediation_context(
 
     # Redact secret values in file content and evidence
     safe_content = redact_secrets_in_text(file_content)
-    safe_evidence = redact_secrets_in_text(finding.evidence or "")
+    safe_evidence = redact_secrets_in_text(getattr(finding, "evidence", None) or "")
 
     surrounding = extract_surrounding_code(
         safe_content,
@@ -156,12 +167,15 @@ def build_remediation_context(
         context_lines=20,
     )
 
+    corr_id = getattr(correlated_finding, "id", None) if correlated_finding else None
+    rc = root_cause or (getattr(correlated_finding, "root_cause", None) if correlated_finding else None)
+
     return RemediationContext(
         finding_id=finding.id,
         review_id=finding.review_id,
         repository_name=repository_name,
         category=finding.category,
-        type=finding.type,
+        type=getattr(finding, "type", None),
         severity=finding.severity,
         title=finding.title,
         description=finding.description or "",
@@ -169,11 +183,14 @@ def build_remediation_context(
         start_line=start_line,
         end_line=end_line,
         evidence=safe_evidence,
-        cwe=finding.cwe,
+        cwe=getattr(finding, "cwe", None),
         file_content=safe_content,
         surrounding_code=surrounding,
         language=lang,
         frameworks=frameworks or [],
         dependencies=dependencies or [],
+        correlated_finding_id=corr_id,
+        root_cause=rc,
+        constituent_findings=constituent_findings or [],
         previous_attempt=previous_attempt,
     )

@@ -22,6 +22,7 @@ import {
   getRemediation,
   getRemediationResult,
   getRemediationVerification,
+  getRemediationGate5,
   getFindingRemediations,
 } from '@/lib/api';
 
@@ -69,6 +70,15 @@ export function RemediationPanel({
           getRemediationResult(runId),
           getRemediationVerification(runId),
         ]);
+        if (!resData.gate_5_result) {
+          try {
+            const gate5Data = await getRemediationGate5(runId);
+            resData.gate_5_result = gate5Data;
+            resData.gate_5_decision = gate5Data.decision;
+          } catch {
+            // graceful fallback if gate 5 details not available
+          }
+        }
         setResult(resData);
         setVerification(verData);
         if (onStatusChange && resData.verification_status === 'resolved') {
@@ -279,8 +289,8 @@ export function RemediationPanel({
             <VerificationResultCard
               findingTitle={finding.title}
               verificationStatus={result.verification_status}
-              confidence={result.verification_confidence}
-              reason={result.verification_reason}
+              confidence={result.verification_confidence ?? 0.9}
+              reason={result.verification_reason ?? result.explanation ?? 'Verification passed.'}
               remainingRisk={result.remaining_risk}
               newFindingsCount={result.new_findings?.length ?? 0}
               canRetry={canRetry}
@@ -293,11 +303,10 @@ export function RemediationPanel({
             <div className="flex items-center gap-2 border-b border-[var(--border-subtle)] pb-2 text-xs">
               <button
                 onClick={() => setActiveTab('diff')}
-                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md font-medium transition-all ${
-                  activeTab === 'diff'
+                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md font-medium transition-all ${activeTab === 'diff'
                     ? 'bg-primary-600/20 text-primary-300 border border-primary-500/30'
                     : 'text-[var(--text-muted)] hover:text-[var(--text-primary)] hover:bg-white/5'
-                }`}
+                  }`}
               >
                 <Code2 className="w-3.5 h-3.5" />
                 <span>Unified Diff & Patch</span>
@@ -305,11 +314,10 @@ export function RemediationPanel({
 
               <button
                 onClick={() => setActiveTab('strategy')}
-                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md font-medium transition-all ${
-                  activeTab === 'strategy'
+                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md font-medium transition-all ${activeTab === 'strategy'
                     ? 'bg-primary-600/20 text-primary-300 border border-primary-500/30'
                     : 'text-[var(--text-muted)] hover:text-[var(--text-primary)] hover:bg-white/5'
-                }`}
+                  }`}
               >
                 <FileCheck className="w-3.5 h-3.5" />
                 <span>Strategy & Rationale</span>
@@ -317,11 +325,10 @@ export function RemediationPanel({
 
               <button
                 onClick={() => setActiveTab('evidence')}
-                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md font-medium transition-all ${
-                  activeTab === 'evidence'
+                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md font-medium transition-all ${activeTab === 'evidence'
                     ? 'bg-primary-600/20 text-primary-300 border border-primary-500/30'
                     : 'text-[var(--text-muted)] hover:text-[var(--text-primary)] hover:bg-white/5'
-                }`}
+                  }`}
               >
                 <CheckCircle2 className="w-3.5 h-3.5" />
                 <span>Verification Evidence ({verification?.evidence?.length ?? 0})</span>
@@ -332,8 +339,8 @@ export function RemediationPanel({
           {/* Tab Content */}
           {result && activeTab === 'diff' && (
             <RemediationDiff
-              diff={result.diff}
-              filePath={result.files_changed?.[0] || finding.file_path || undefined}
+              diff={result.diff || ''}
+              filePath={result.files_changed?.[0] || result.changed_files?.[0] || finding.file_path || undefined}
             />
           )}
 

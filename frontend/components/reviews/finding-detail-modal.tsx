@@ -1,17 +1,23 @@
 'use client';
 
 import { useState, useEffect } from 'react';
-import { X, FileCode, AlertTriangle, ExternalLink, Sparkles, ShieldCheck, ShieldAlert } from 'lucide-react';
-import type { Finding } from '@/types/security';
+import { X, FileCode, AlertTriangle, Sparkles, ShieldCheck, ShieldAlert, Layers } from 'lucide-react';
+import type { Finding, CorrelatedFinding } from '@/types/security';
 import { RemediationPanel } from '@/components/remediation/remediation-panel';
 
 interface FindingDetailModalProps {
   finding: Finding | null;
+  correlatedFinding?: CorrelatedFinding | null;
   onClose: () => void;
   onStatusChange?: (findingId: string, newStatus: string) => void;
 }
 
-export function FindingDetailModal({ finding, onClose, onStatusChange }: FindingDetailModalProps) {
+export function FindingDetailModal({
+  finding,
+  correlatedFinding,
+  onClose,
+  onStatusChange,
+}: FindingDetailModalProps) {
   const [showRemediation, setShowRemediation] = useState(false);
   const [statusOverride, setStatusOverride] = useState<{ id: string; status: string } | null>(null);
 
@@ -29,10 +35,11 @@ export function FindingDetailModal({ finding, onClose, onStatusChange }: Finding
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [onClose, showRemediation]);
 
-  if (!finding) return null;
+  const activeItem = correlatedFinding ?? finding;
+  if (!activeItem) return null;
 
   const effectiveStatus =
-    statusOverride && statusOverride.id === finding.id ? statusOverride.status : finding.status;
+    statusOverride && statusOverride.id === activeItem.id ? statusOverride.status : activeItem.status;
   const isResolved = effectiveStatus === 'resolved';
   const isInProgress = effectiveStatus === 'remediation_in_progress';
   const isFailed = effectiveStatus === 'verification_failed';
@@ -52,17 +59,37 @@ export function FindingDetailModal({ finding, onClose, onStatusChange }: Finding
     }
   };
 
-  const lineRange = finding.start_line
-    ? finding.end_line && finding.end_line !== finding.start_line
-      ? `Lines ${finding.start_line}–${finding.end_line}`
-      : `Line ${finding.start_line}`
-    : finding.line_number
-    ? `Line ${finding.line_number}`
+  const lineRange = activeItem.start_line
+    ? activeItem.end_line && activeItem.end_line !== activeItem.start_line
+      ? `Lines ${activeItem.start_line}–${activeItem.end_line}`
+      : `Line ${activeItem.start_line}`
+    : activeItem.line_number
+    ? `Line ${activeItem.line_number}`
     : 'Entire File';
 
-  const confidencePct = finding.confidence !== null && finding.confidence !== undefined
-    ? `${Math.round(finding.confidence * 100)}%`
-    : '—';
+  const confidencePct =
+    activeItem.confidence !== null && activeItem.confidence !== undefined
+      ? `${Math.round(activeItem.confidence * 100)}%`
+      : '—';
+
+  // Construct a Finding proxy if only correlatedFinding is provided for the RemediationPanel
+  const remediableFinding: Finding = finding ?? {
+    id: correlatedFinding?.primary_finding_id ?? activeItem.id,
+    review_id: activeItem.review_id,
+    category: activeItem.category,
+    severity: activeItem.severity,
+    title: activeItem.title,
+    description: activeItem.description ?? null,
+    file_path: activeItem.file_path ?? null,
+    line_number: activeItem.line_number ?? null,
+    start_line: activeItem.start_line ?? null,
+    end_line: activeItem.end_line ?? null,
+    confidence: activeItem.confidence ?? 0.85,
+    evidence: activeItem.evidence ?? null,
+    cwe: activeItem.cwe ?? null,
+    status: activeItem.status,
+    created_at: activeItem.created_at,
+  };
 
   return (
     <>
@@ -77,15 +104,21 @@ export function FindingDetailModal({ finding, onClose, onStatusChange }: Finding
               <div className="flex flex-wrap items-center gap-2 mb-2">
                 <span
                   className={`text-xs font-mono font-bold uppercase px-2.5 py-0.5 rounded border ${getSeverityBadgeClass(
-                    finding.severity
+                    activeItem.severity
                   )}`}
                 >
-                  {finding.severity}
+                  {activeItem.severity}
                 </span>
 
                 <span className="text-xs font-medium px-2 py-0.5 rounded bg-white/5 border border-white/10 text-[var(--text-secondary)] capitalize">
-                  {finding.category}
+                  {activeItem.category}
                 </span>
+
+                {correlatedFinding && (
+                  <span className="text-xs font-mono font-bold px-2 py-0.5 rounded bg-purple-500/15 text-purple-300 border border-purple-500/30 flex items-center gap-1">
+                    <Layers size={11} /> Unified Correlated Issue
+                  </span>
+                )}
 
                 {/* Remediation Status Pill */}
                 {isResolved ? (
@@ -98,48 +131,64 @@ export function FindingDetailModal({ finding, onClose, onStatusChange }: Finding
                   </span>
                 ) : isFailed ? (
                   <span className="text-xs font-mono font-semibold px-2 py-0.5 rounded bg-red-500/15 border border-red-500/30 text-red-400 flex items-center gap-1">
-                    <ShieldAlert size={11} /> Verification failed
+                    <ShieldAlert size={11} /> Verification Failed
                   </span>
                 ) : null}
 
-                {finding.cwe && (
-                  <a
-                    href={`https://cwe.mitre.org/data/definitions/${finding.cwe.replace(/[^0-9]/g, '')}.html`}
-                    target="_blank"
-                    rel="noreferrer"
-                    className="text-xs font-mono px-2 py-0.5 rounded bg-blue-500/10 border border-blue-500/30 text-blue-400 hover:bg-blue-500/20 flex items-center gap-1 transition-colors"
-                  >
-                    {finding.cwe}
-                    <ExternalLink size={10} />
-                  </a>
+                {activeItem.cwe && (
+                  <span className="text-xs font-mono px-2 py-0.5 rounded bg-blue-500/10 text-blue-400 border border-blue-500/20">
+                    {activeItem.cwe}
+                  </span>
                 )}
-
-                <span className="text-xs font-mono px-2 py-0.5 rounded bg-emerald-500/10 border border-emerald-500/20 text-emerald-400">
-                  Confidence {confidencePct}
-                </span>
               </div>
 
-              <h2 className="text-[17px] font-bold text-[var(--text-primary)]">
-                {finding.title}
-              </h2>
+              <h3 className="text-base font-semibold text-[var(--text-primary)] leading-snug">
+                {activeItem.title}
+              </h3>
             </div>
 
             <button
               onClick={onClose}
-              className="p-1.5 rounded-lg text-[var(--text-tertiary)] hover:text-[var(--text-primary)] hover:bg-white/5 transition-colors"
+              className="p-1 rounded-md text-[var(--text-tertiary)] hover:text-white hover:bg-white/10 transition-colors"
             >
-              <X size={18} />
+              <X size={16} />
             </button>
           </div>
 
-          {/* Location & Metadata */}
-          <div className="py-4 border-b border-[var(--border-subtle)] grid grid-cols-1 md:grid-cols-2 gap-3 text-xs">
-            <div className="flex items-center gap-2 text-[var(--text-secondary)]">
-              <FileCode size={14} className="text-[var(--text-tertiary)] shrink-0" />
-              <span className="font-mono text-[var(--text-primary)] truncate">
-                {finding.file_path ?? 'Repository-level'}
-              </span>
+          {/* Root Cause Callout (if correlated) */}
+          {correlatedFinding?.root_cause && (
+            <div className="mt-4 p-3 rounded-lg bg-purple-500/10 border border-purple-500/20">
+              <div className="text-[11px] font-mono font-bold uppercase text-purple-400 mb-1 flex items-center gap-1.5">
+                <Sparkles size={12} /> Root Cause Analysis
+              </div>
+              <div className="text-[12px] text-purple-200/90 leading-relaxed">
+                {correlatedFinding.root_cause}
+              </div>
             </div>
+          )}
+
+          {/* Correlation Logic Explanation */}
+          {correlatedFinding?.correlation_explanation && (
+            <div className="mt-3 p-3 rounded-lg bg-blue-500/10 border border-blue-500/20">
+              <div className="text-[11px] font-mono font-bold uppercase text-blue-400 mb-1">
+                Correlation Rationale & Risk Policy
+              </div>
+              <div className="text-[12px] text-blue-200/90 leading-relaxed">
+                {correlatedFinding.correlation_explanation}
+              </div>
+            </div>
+          )}
+
+          {/* Metadata Grid */}
+          <div className="grid grid-cols-2 gap-3 py-4 border-b border-[var(--border-subtle)] text-xs">
+            {activeItem.file_path && (
+              <div className="flex items-center gap-2 text-[var(--text-secondary)]">
+                <FileCode size={13} className="text-[var(--text-tertiary)] shrink-0" />
+                <span className="font-mono text-[var(--text-primary)] truncate">
+                  {activeItem.file_path}
+                </span>
+              </div>
+            )}
 
             <div className="flex items-center gap-2 text-[var(--text-secondary)]">
               <span className="text-[var(--text-tertiary)]">Location:</span>
@@ -147,38 +196,89 @@ export function FindingDetailModal({ finding, onClose, onStatusChange }: Finding
             </div>
 
             <div className="flex items-center gap-2 text-[var(--text-secondary)]">
-              <span className="text-[var(--text-tertiary)]">Detected by:</span>
-              <span className="font-medium text-purple-400 capitalize">
-                {(finding.source ?? 'analysis_agent').replace(/_/g, ' ')}
-              </span>
+              <span className="text-[var(--text-tertiary)]">Confidence:</span>
+              <span className="font-mono text-emerald-400">{confidencePct}</span>
             </div>
 
-            {finding.type && (
+            {finding?.source && (
               <div className="flex items-center gap-2 text-[var(--text-secondary)]">
-                <span className="text-[var(--text-tertiary)]">Issue Type:</span>
-                <span className="font-mono text-[var(--text-primary)]">{finding.type}</span>
+                <span className="text-[var(--text-tertiary)]">Detected by:</span>
+                <span className="font-medium text-purple-400 capitalize">
+                  {finding.source.replace(/_/g, ' ')}
+                </span>
               </div>
             )}
           </div>
 
+          {/* Constituent Source Findings (Traceability) */}
+          {correlatedFinding && correlatedFinding.relationships && correlatedFinding.relationships.length > 0 && (
+            <div className="py-4 border-b border-[var(--border-subtle)]">
+              <h4 className="text-xs font-semibold text-[var(--text-tertiary)] uppercase tracking-wider mb-2.5 flex items-center justify-between">
+                <span>Constituent Source Findings ({correlatedFinding.relationships.length})</span>
+                <span className="text-[10px] text-emerald-400 font-mono">100% Traceable</span>
+              </h4>
+              <div className="space-y-2">
+                {correlatedFinding.relationships.map((rel, idx) => (
+                  <div
+                    key={rel.id ?? idx}
+                    className="p-3 rounded-lg bg-black/40 border border-white/5 space-y-1.5"
+                  >
+                    <div className="flex items-center justify-between text-[11px]">
+                      <span className="font-mono font-bold uppercase text-emerald-400 px-2 py-0.5 rounded bg-emerald-500/10 border border-emerald-500/20">
+                        {rel.relationship_type.replace(/_/g, ' ')}
+                      </span>
+                      <span className="text-[var(--text-tertiary)] font-mono">
+                        Confidence {Math.round(rel.confidence * 100)}%
+                      </span>
+                    </div>
+
+                    {rel.rationale && (
+                      <p className="text-[12px] text-[var(--text-secondary)] leading-relaxed">
+                        {rel.rationale}
+                      </p>
+                    )}
+
+                    {rel.source_finding && (
+                      <div className="pt-1 text-[11px] text-[var(--text-tertiary)] font-mono flex flex-wrap items-center gap-2 border-t border-white/5">
+                        <span className="text-purple-300 font-semibold">
+                          via {rel.source_finding.source?.replace(/_/g, ' ')}
+                        </span>
+                        <span>•</span>
+                        <span className="uppercase text-amber-300 font-semibold">
+                          {rel.source_finding.severity}
+                        </span>
+                        {rel.source_finding.file_path && (
+                          <>
+                            <span>•</span>
+                            <span className="truncate">{rel.source_finding.file_path}:{rel.source_finding.start_line}</span>
+                          </>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
           {/* Description */}
           <div className="py-4 border-b border-[var(--border-subtle)]">
             <h4 className="text-xs font-semibold text-[var(--text-tertiary)] uppercase tracking-wider mb-2">
-              Description
+              Consolidated Description
             </h4>
-            <p className="text-[13px] leading-relaxed text-[var(--text-secondary)]">
-              {finding.description ?? 'No detailed description provided.'}
+            <p className="text-[13px] leading-relaxed text-[var(--text-secondary)] whitespace-pre-wrap">
+              {activeItem.description ?? 'No detailed description provided.'}
             </p>
           </div>
 
           {/* Evidence */}
-          {finding.evidence && (
+          {activeItem.evidence && (
             <div className="py-4 border-b border-[var(--border-subtle)]">
               <h4 className="text-xs font-semibold text-[var(--text-tertiary)] uppercase tracking-wider mb-2">
                 Evidence & Code Snippet
               </h4>
               <div className="p-3 rounded-md bg-black/50 border border-white/10 font-mono text-[11px] text-emerald-300/90 overflow-x-auto whitespace-pre-wrap leading-normal">
-                {finding.evidence}
+                {activeItem.evidence}
               </div>
             </div>
           )}
@@ -187,10 +287,10 @@ export function FindingDetailModal({ finding, onClose, onStatusChange }: Finding
           <div className="py-4 border-b border-[var(--border-subtle)]">
             <h4 className="text-xs font-semibold text-[var(--text-tertiary)] uppercase tracking-wider mb-2 flex items-center gap-1.5">
               <AlertTriangle size={13} className="text-amber-400" />
-              Why This Matters
+              Impact & Engineering Context
             </h4>
             <p className="text-[12px] leading-relaxed text-[var(--text-secondary)]">
-              {finding.category === 'security'
+              {activeItem.category === 'security'
                 ? 'Security vulnerabilities can lead to data exposure, unauthorized manipulation, or remote execution. Remediating input validation and boundary checks is essential before deployment.'
                 : 'Quality and maintainability issues increase technical debt, defect rates, and operational complexity over time. Refactoring keeps codebase resilient.'}
             </p>
@@ -199,7 +299,7 @@ export function FindingDetailModal({ finding, onClose, onStatusChange }: Finding
           {/* Actions Bar */}
           <div className="mt-4 pt-3 flex items-center justify-between">
             <span className="text-[11px] text-[var(--text-tertiary)] font-mono">
-              ID: {finding.id.slice(0, 8)}…
+              ID: {activeItem.id.slice(0, 8)}…
             </span>
 
             <div className="flex items-center gap-2.5">
@@ -208,7 +308,7 @@ export function FindingDetailModal({ finding, onClose, onStatusChange }: Finding
                 className={`text-xs px-4 py-2 rounded-lg font-medium transition-all shadow-sm flex items-center gap-1.5 ${
                   isResolved
                     ? 'bg-emerald-600/20 hover:bg-emerald-600/30 text-emerald-300 border border-emerald-500/40'
-                    : 'bg-primary-600 hover:bg-primary-500 text-white'
+                    : 'bg-indigo-600 hover:bg-indigo-500 text-white'
                 }`}
               >
                 <Sparkles size={13} />
@@ -226,15 +326,14 @@ export function FindingDetailModal({ finding, onClose, onStatusChange }: Finding
       {/* Embedded Remediation & Verification Panel */}
       {showRemediation && (
         <RemediationPanel
-          finding={finding}
+          finding={remediableFinding}
           onClose={() => setShowRemediation(false)}
           onStatusChange={(newStatus) => {
-            setStatusOverride({ id: finding.id, status: newStatus });
-            if (onStatusChange) onStatusChange(finding.id, newStatus);
+            setStatusOverride({ id: activeItem.id, status: newStatus });
+            if (onStatusChange) onStatusChange(activeItem.id, newStatus);
           }}
         />
       )}
     </>
   );
 }
-

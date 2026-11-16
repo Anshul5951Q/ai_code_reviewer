@@ -8,8 +8,8 @@ const PIPELINE_STEPS = [
   { icon: Code2, label: 'Code Understanding', description: 'Parse structure & dependencies' },
   { icon: Shield, label: 'Security Detection', description: 'Scan for vulnerabilities' },
   { icon: Info, label: 'Quality Analysis', description: 'Evaluate code patterns' },
-  { icon: Wrench, label: 'Remediation', description: 'Generate fix suggestions' },
-  { icon: CheckCircle, label: 'Verification', description: 'Validate fixes are safe' },
+  { icon: Wrench, label: 'Remediation', description: 'Actionable patch generation for findings' },
+  { icon: CheckCircle, label: 'Verification', description: 'Gate 4 & Gate 5 validation for patches' },
 ] as const;
 
 export function AnalysisPreview({ repositoryConnected = false }: AnalysisPreviewProps) {

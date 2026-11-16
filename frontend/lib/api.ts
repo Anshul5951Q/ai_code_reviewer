@@ -13,7 +13,13 @@ import type {
   RepositoryListResponse,
 } from '@/types/repository';
 import type { Review, ReviewListResponse } from '@/types/review';
-import type { FindingListResponse, SecuritySummary } from '@/types/security';
+import type {
+  CorrelatedFinding,
+  CorrelatedFindingListResponse,
+  CorrelationStatus,
+  FindingListResponse,
+  SecuritySummary,
+} from '@/types/security';
 import type {
   GitHubBranch,
   GitHubCommit,
@@ -49,34 +55,114 @@ export class ApiClientError extends Error {
   }
 }
 
-async function request<T>(path: string, init?: RequestInit): Promise<T> {
+function assertValidId(id: string, entityName = 'ID'): void {
+  if (!id || typeof id !== 'string' || id.trim() === '' || id === 'undefined') {
+    throw new ApiClientError({
+      detail: `Invalid or missing ${entityName}.`,
+      status: 400,
+    });
+  }
+}
+
+interface CacheEntry<T> {
+  data: T;
+  timestamp: number;
+}
+
+const apiCache = new Map<string, CacheEntry<unknown>>();
+const inFlightRequests = new Map<string, Promise<unknown>>();
+
+// Default micro-cache TTL: 5000ms (5 seconds) for safe GET requests
+const DEFAULT_CACHE_TTL_MS = 5000;
+
+export function clearApiCache(pathPrefix?: string): void {
+  if (!pathPrefix) {
+    apiCache.clear();
+    return;
+  }
+  for (const key of apiCache.keys()) {
+    if (key.includes(pathPrefix)) {
+      apiCache.delete(key);
+    }
+  }
+}
+
+export interface RequestOptions extends RequestInit {
+  cacheTtlMs?: number;
+  skipCache?: boolean;
+}
+
+async function request<T>(path: string, init?: RequestOptions): Promise<T> {
+  const method = (init?.method ?? 'GET').toUpperCase();
   const url = `${API_BASE_URL}${path}`;
 
-  const response = await fetch(url, {
-    credentials: 'include',
-    headers: {
-      'Content-Type': 'application/json',
-      ...init?.headers,
-    },
-    ...init,
-  });
-
-  if (!response.ok) {
-    let detail = `HTTP ${response.status}`;
-    try {
-      const body = await response.json();
-      detail = body.detail ?? detail;
-    } catch {
-      // ignore parse errors
+  // If mutation (POST/PUT/DELETE/PATCH), clear matching cache and bypass
+  if (method !== 'GET') {
+    if (path.startsWith('/repositories')) clearApiCache('/repositories');
+    if (path.startsWith('/reviews')) clearApiCache('/reviews');
+    if (path.startsWith('/github')) clearApiCache('/github');
+    if (path.startsWith('/remediations')) clearApiCache('/remediations');
+    if (path.startsWith('/security')) clearApiCache('/security');
+  } else if (!init?.skipCache) {
+    const ttl = init?.cacheTtlMs ?? DEFAULT_CACHE_TTL_MS;
+    if (ttl > 0) {
+      const cached = apiCache.get(url);
+      if (cached && Date.now() - cached.timestamp < ttl) {
+        return cached.data as T;
+      }
     }
-    throw new ApiClientError({ status: response.status, detail });
+
+    // In-flight request deduplication for identical concurrent GETs
+    const inFlight = inFlightRequests.get(url);
+    if (inFlight) {
+      return inFlight as Promise<T>;
+    }
   }
 
-  if (response.status === 204) {
-    return {} as T;
+  const executeRequest = async (): Promise<T> => {
+    const response = await fetch(url, {
+      credentials: 'include',
+      headers: {
+        'Content-Type': 'application/json',
+        ...init?.headers,
+      },
+      ...init,
+    });
+
+    if (!response.ok) {
+      let detail = `HTTP ${response.status}`;
+      try {
+        const body = await response.json();
+        detail = body.detail ?? detail;
+      } catch {
+        // ignore parse errors
+      }
+      throw new ApiClientError({ status: response.status, detail });
+    }
+
+    if (response.status === 204) {
+      return {} as T;
+    }
+
+    const data = (await response.json()) as T;
+    if (method === 'GET' && !init?.skipCache) {
+      const ttl = init?.cacheTtlMs ?? DEFAULT_CACHE_TTL_MS;
+      if (ttl > 0) {
+        apiCache.set(url, { data, timestamp: Date.now() });
+      }
+    }
+    return data;
+  };
+
+  if (method === 'GET') {
+    const promise = executeRequest().finally(() => {
+      inFlightRequests.delete(url);
+    });
+    inFlightRequests.set(url, promise);
+    return promise;
   }
 
-  return response.json() as Promise<T>;
+  return executeRequest();
 }
 
 // ---------------------------------------------------------------------------
@@ -255,7 +341,8 @@ export async function getReviews(params?: {
 }
 
 export async function getReview(id: string): Promise<Review> {
-  return request<Review>(`/reviews/${id}`);
+  assertValidId(id, 'review ID');
+  return request<Review>(`/reviews/${encodeURIComponent(id.trim())}`);
 }
 
 export async function createReview(data: {
@@ -281,6 +368,7 @@ export async function getReviewFindings(
     offset?: number;
   },
 ): Promise<FindingListResponse> {
+  assertValidId(reviewId, 'review ID');
   const searchParams = new URLSearchParams();
   if (params?.severity) searchParams.set('severity', params.severity);
   if (params?.category) searchParams.set('category', params.category);
@@ -298,6 +386,7 @@ export async function getReviewFindings(
 // ---------------------------------------------------------------------------
 
 import type {
+  AgentRun,
   AgentRunListResponse,
   StartPhase5AnalysisResponse,
 } from '@/types/agent';
@@ -306,11 +395,12 @@ export async function runReviewAnalysis(
   reviewId: string,
   options?: { wait?: boolean },
 ): Promise<StartPhase5AnalysisResponse> {
+  assertValidId(reviewId, 'review ID');
   const searchParams = new URLSearchParams();
   if (options?.wait) searchParams.set('wait', 'true');
   const q = searchParams.toString();
   return request<StartPhase5AnalysisResponse>(
-    `/reviews/${reviewId}/run${q ? `?${q}` : ''}`,
+    `/reviews/${encodeURIComponent(reviewId.trim())}/run${q ? `?${q}` : ''}`,
     { method: 'POST' },
   );
 }
@@ -318,7 +408,49 @@ export async function runReviewAnalysis(
 export async function getReviewAgents(
   reviewId: string,
 ): Promise<AgentRunListResponse> {
-  return request<AgentRunListResponse>(`/reviews/${reviewId}/agents`);
+  assertValidId(reviewId, 'review ID');
+  return request<AgentRunListResponse>(`/reviews/${encodeURIComponent(reviewId.trim())}/agents`);
+}
+
+export async function getCodeQualityAgent(
+  reviewId: string,
+): Promise<AgentRun> {
+  return request<AgentRun>(`/reviews/${reviewId}/agents/code-quality`);
+}
+
+export async function runCodeQualityAgent(
+  reviewId: string,
+): Promise<AgentRun> {
+  return request<AgentRun>(`/reviews/${reviewId}/agents/code-quality`, {
+    method: 'POST',
+  });
+}
+
+export async function getSecurityAgent(
+  reviewId: string,
+): Promise<AgentRun> {
+  return request<AgentRun>(`/reviews/${reviewId}/agents/security`);
+}
+
+export async function runSecurityAgent(
+  reviewId: string,
+): Promise<AgentRun> {
+  return request<AgentRun>(`/reviews/${reviewId}/agents/security`, {
+    method: 'POST',
+  });
+}
+
+export interface GateAuditData {
+  review_id: string;
+  gate_1?: Record<string, unknown> | null;
+  gate_2?: Record<string, unknown> | null;
+  gate_3?: Record<string, unknown> | null;
+}
+
+export async function getGateAudits(
+  reviewId: string,
+): Promise<GateAuditData> {
+  return request<GateAuditData>(`/reviews/${reviewId}/gates`);
 }
 
 // ---------------------------------------------------------------------------
@@ -357,17 +489,20 @@ import type {
 } from '@/types/analysis';
 
 export async function startAnalysis(reviewId: string): Promise<StartAnalysisResponse> {
-  return request<StartAnalysisResponse>(`/reviews/${reviewId}/analyze`, {
+  assertValidId(reviewId, 'review ID');
+  return request<StartAnalysisResponse>(`/reviews/${encodeURIComponent(reviewId.trim())}/analyze`, {
     method: 'POST',
   });
 }
 
 export async function getAnalysisStatus(reviewId: string): Promise<AnalysisJob> {
-  return request<AnalysisJob>(`/reviews/${reviewId}/analysis`);
+  assertValidId(reviewId, 'review ID');
+  return request<AnalysisJob>(`/reviews/${encodeURIComponent(reviewId.trim())}/analysis`);
 }
 
 export async function getReviewSnapshot(reviewId: string): Promise<RepositorySnapshot> {
-  return request<RepositorySnapshot>(`/reviews/${reviewId}/snapshot`);
+  assertValidId(reviewId, 'review ID');
+  return request<RepositorySnapshot>(`/reviews/${encodeURIComponent(reviewId.trim())}/snapshot`);
 }
 
 // ---------------------------------------------------------------------------
@@ -375,10 +510,17 @@ export async function getReviewSnapshot(reviewId: string): Promise<RepositorySna
 // ---------------------------------------------------------------------------
 
 import type {
+  BatchRemediationResponse,
+  FindingResolutionStatusResponse,
+  Gate4AuditReport,
+  Gate5DecisionResult,
+  PatchRiskAssessment,
   RemediationHistoryResponse,
   RemediationResultResponse,
   RemediationRun,
+  VerificationHistoryResponse,
   VerificationResult,
+  VerificationRunResponse,
 } from '@/types/remediation';
 
 export async function remediateFinding(
@@ -388,6 +530,30 @@ export async function remediateFinding(
   const query = options?.wait ? '?wait=true' : '';
   return request<RemediationRun>(`/findings/${findingId}/remediate${query}`, {
     method: 'POST',
+  });
+}
+
+export async function remediateCorrelatedFinding(
+  reviewId: string,
+  correlatedFindingId: string,
+  options?: { wait?: boolean }
+): Promise<RemediationRun> {
+  const query = options?.wait ? '?wait=true' : '';
+  return request<RemediationRun>(
+    `/reviews/${reviewId}/correlated-findings/${correlatedFindingId}/remediate${query}`,
+    {
+      method: 'POST',
+    }
+  );
+}
+
+export async function remediateEligibleFindings(
+  reviewId: string,
+  payload?: { min_confidence?: number; categories?: string[] }
+): Promise<BatchRemediationResponse> {
+  return request<BatchRemediationResponse>(`/reviews/${reviewId}/remediate-eligible`, {
+    method: 'POST',
+    body: JSON.stringify(payload || {}),
   });
 }
 
@@ -407,9 +573,116 @@ export async function getRemediationVerification(
   return request<VerificationResult>(`/remediations/${remediationId}/verification`);
 }
 
+export async function getRemediationGate4(
+  remediationId: string
+): Promise<Gate4AuditReport> {
+  return request<Gate4AuditReport>(`/remediations/${remediationId}/gate-4`);
+}
+
+export async function getRemediationGate5(
+  remediationId: string
+): Promise<Gate5DecisionResult> {
+  return request<Gate5DecisionResult>(`/remediations/${remediationId}/gate-5`);
+}
+
+export async function getRemediationVerificationHistory(
+  remediationId: string
+): Promise<VerificationHistoryResponse> {
+  return request<VerificationHistoryResponse>(`/remediations/${remediationId}/verification-history`);
+}
+
+export async function triggerIndependentVerification(
+  remediationId: string
+): Promise<VerificationRunResponse> {
+  return request<VerificationRunResponse>(`/remediations/${remediationId}/verify`, {
+    method: 'POST',
+  });
+}
+
+export async function getFindingResolutionStatus(
+  findingId: string
+): Promise<FindingResolutionStatusResponse> {
+  return request<FindingResolutionStatusResponse>(`/findings/${findingId}/resolution-status`);
+}
+
+export async function getRemediationRisk(
+  remediationId: string
+): Promise<PatchRiskAssessment> {
+  return request<PatchRiskAssessment>(`/remediations/${remediationId}/risk`);
+}
+
+export async function retryRemediation(
+  remediationId: string,
+  options?: { wait?: boolean }
+): Promise<RemediationRun> {
+  const query = options?.wait ? '?wait=true' : '';
+  return request<RemediationRun>(`/remediations/${remediationId}/retry${query}`, {
+    method: 'POST',
+  });
+}
+
+export async function getCorrelatedFindingRemediations(
+  reviewId: string,
+  correlatedFindingId: string
+): Promise<RemediationHistoryResponse> {
+  return request<RemediationHistoryResponse>(
+    `/reviews/${reviewId}/correlated-findings/${correlatedFindingId}/remediations`
+  );
+}
+
 export async function getFindingRemediations(
   findingId: string
 ): Promise<RemediationHistoryResponse> {
   return request<RemediationHistoryResponse>(`/findings/${findingId}/remediations`);
+}
+
+// ---------------------------------------------------------------------------
+// Finding Correlation (Sub-Phase 7.4)
+// ---------------------------------------------------------------------------
+
+export async function getCorrelatedFindings(
+  reviewId: string,
+  params?: {
+    severity?: string;
+    category?: string;
+    relationship_type?: string;
+    limit?: number;
+    offset?: number;
+  }
+): Promise<CorrelatedFindingListResponse> {
+  assertValidId(reviewId, 'review ID');
+  const searchParams = new URLSearchParams();
+  if (params?.severity) searchParams.set('severity', params.severity);
+  if (params?.category) searchParams.set('category', params.category);
+  if (params?.relationship_type) searchParams.set('relationship_type', params.relationship_type);
+  if (params?.limit !== undefined) searchParams.set('limit', String(params.limit));
+  if (params?.offset !== undefined) searchParams.set('offset', String(params.offset));
+  const qs = searchParams.toString();
+  const query = qs ? `?${qs}` : '';
+  return request<CorrelatedFindingListResponse>(`/reviews/${encodeURIComponent(reviewId.trim())}/correlated-findings${query}`);
+}
+
+export async function getSingleCorrelatedFinding(
+  reviewId: string,
+  findingId: string
+): Promise<CorrelatedFinding> {
+  assertValidId(reviewId, 'review ID');
+  assertValidId(findingId, 'correlated finding ID');
+  return request<CorrelatedFinding>(`/reviews/${encodeURIComponent(reviewId.trim())}/correlated-findings/${encodeURIComponent(findingId.trim())}`);
+}
+
+export async function getCorrelationStatus(
+  reviewId: string
+): Promise<CorrelationStatus> {
+  assertValidId(reviewId, 'review ID');
+  return request<CorrelationStatus>(`/reviews/${encodeURIComponent(reviewId.trim())}/correlation/status`);
+}
+
+export async function triggerCorrelation(
+  reviewId: string
+): Promise<CorrelationStatus> {
+  return request<CorrelationStatus>(`/reviews/${reviewId}/correlate`, {
+    method: 'POST',
+  });
 }
 

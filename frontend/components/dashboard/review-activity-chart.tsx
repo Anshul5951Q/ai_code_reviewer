@@ -1,5 +1,6 @@
 'use client';
 
+import { useMemo } from 'react';
 import {
   AreaChart,
   Area,
@@ -9,13 +10,47 @@ import {
   Tooltip,
   ResponsiveContainer,
 } from 'recharts';
-import { DEMO_REVIEW_ACTIVITY } from '@/lib/constants';
 import { EmptyState } from '@/components/common/empty-state';
 import { Activity } from 'lucide-react';
+import type { Review } from '@/types/review';
 
-const hasData = DEMO_REVIEW_ACTIVITY.some((d) => d.reviews > 0);
+interface ReviewActivityChartProps {
+  reviews?: Review[];
+}
 
-export function ReviewActivityChart() {
+export function ReviewActivityChart({ reviews = [] }: ReviewActivityChartProps) {
+  const chartData = useMemo(() => {
+    // Generate dates for the last 7 days
+    const days: Array<{ date: string; fullDate: string; reviews: number }> = [];
+    const now = new Date();
+    for (let i = 6; i >= 0; i--) {
+      const d = new Date(now);
+      d.setDate(d.getDate() - i);
+      const label = d.toLocaleDateString(undefined, { weekday: 'short' });
+      const dateStr = d.toISOString().split('T')[0];
+      days.push({
+        date: label,
+        fullDate: dateStr,
+        reviews: 0,
+      });
+    }
+
+    // Tally reviews by creation date
+    for (const rev of reviews) {
+      if (rev.created_at) {
+        const revDate = new Date(rev.created_at).toISOString().split('T')[0];
+        const match = days.find((day) => day.fullDate === revDate);
+        if (match) {
+          match.reviews += 1;
+        }
+      }
+    }
+
+    return days;
+  }, [reviews]);
+
+  const hasData = reviews.length > 0;
+
   return (
     <div className="card">
       <div className="mb-4">
@@ -32,7 +67,7 @@ export function ReviewActivityChart() {
 
       {hasData ? (
         <ResponsiveContainer width="100%" height={160}>
-          <AreaChart data={DEMO_REVIEW_ACTIVITY} margin={{ top: 4, right: 0, left: -20, bottom: 0 }}>
+          <AreaChart data={chartData} margin={{ top: 4, right: 0, left: -20, bottom: 0 }}>
             <defs>
               <linearGradient id="reviewGradient" x1="0" y1="0" x2="0" y2="1">
                 <stop offset="5%" stopColor="#6366f1" stopOpacity={0.2} />
@@ -47,6 +82,7 @@ export function ReviewActivityChart() {
               tickLine={false}
             />
             <YAxis
+              dataKey="reviews"
               tick={{ fontSize: 10, fill: 'var(--text-tertiary)' }}
               axisLine={false}
               tickLine={false}
@@ -76,7 +112,7 @@ export function ReviewActivityChart() {
       ) : (
         <EmptyState
           icon={<Activity size={18} />}
-          title="No review data yet"
+          title="No review activity yet"
           description="Connect a repository and run your first analysis to see activity here."
           className="py-8"
         />

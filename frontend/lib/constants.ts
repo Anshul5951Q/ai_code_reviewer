@@ -182,13 +182,13 @@ export const ANALYSIS_OPTIONS = [
   {
     id: 'remediation',
     label: 'Remediation',
-    description: 'Generate actionable fix suggestions and code patches for identified issues.',
+    description: 'Generate actionable fix suggestions and code patches for identified issues (available on findings).',
     defaultEnabled: true,
   },
   {
     id: 'verification',
     label: 'Verification',
-    description: 'Validate that proposed remediations resolve findings without introducing regressions.',
+    description: 'Deterministic Gate 4 & Gate 5 validation for proposed remediation patches (triggered during patch generation).',
     defaultEnabled: true,
   },
 ] as const;

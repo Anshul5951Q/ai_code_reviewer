@@ -63,26 +63,10 @@ def build_snapshot(
     branch: str,
     intelligence: RepositoryIntelligence,
     dependencies: List[Dependency],
+    file_inventory: Optional[Any] = None,
 ) -> RepositorySnapshotData:
     """
     Build a RepositorySnapshotData from analysis results.
-
-    Parameters
-    ----------
-    review_id:
-        ID of the associated Review record.
-    commit_sha:
-        Full commit SHA being analyzed.
-    branch:
-        Branch name the commit is on.
-    intelligence:
-        RepositoryIntelligence from analyze_repository().
-    dependencies:
-        Dependency list from analyze_dependencies().
-
-    Returns
-    -------
-    RepositorySnapshotData ready for database persistence.
     """
     languages_data = {
         lang: stat.to_dict()
@@ -91,12 +75,21 @@ def build_snapshot(
 
     dependencies_data = [dep.to_dict() for dep in dependencies]
 
-    structure_data = {
+    structure_data: Dict[str, Any] = {
         "entry_points": intelligence.entry_points,
         "largest_files": intelligence.largest_files,
         "directory_structure": intelligence.directory_structure,
         "total_dependencies": intelligence.total_dependencies,
     }
+
+    if file_inventory is not None:
+        if hasattr(file_inventory, "to_dict"):
+            inv_dict = file_inventory.to_dict()
+            structure_data["file_inventory"] = inv_dict
+            structure_data["coverage"] = inv_dict.get("coverage", {})
+        elif isinstance(file_inventory, dict):
+            structure_data["file_inventory"] = file_inventory
+            structure_data["coverage"] = file_inventory.get("coverage", {})
 
     return RepositorySnapshotData(
         review_id=review_id,

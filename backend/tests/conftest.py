@@ -14,6 +14,7 @@ from sqlalchemy.ext.asyncio import (
 
 # Force test environment
 os.environ["APP_ENV"] = "test"
+os.environ["LLM_PROVIDER"] = "mock"
 os.environ["DATABASE_URL"] = "sqlite+aiosqlite:///:memory:"
 
 from app.core.config import settings

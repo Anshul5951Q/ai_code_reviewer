@@ -7,7 +7,7 @@ import os
 from typing import Optional
 
 from app.core.config import settings
-from app.llm.provider import LLMProvider, MockLLMProvider, OpenAICompatibleProvider
+from app.llm.provider import LLMProvider, MockLLMProvider, OllamaProvider
 
 _global_provider: Optional[LLMProvider] = None
 
@@ -15,27 +15,28 @@ _global_provider: Optional[LLMProvider] = None
 def get_llm_provider() -> LLMProvider:
     """
     Return the active LLMProvider based on configuration.
-    Defaults to MockLLMProvider if no API key is present.
+    Defaults to OllamaProvider using system configuration settings,
+    or MockLLMProvider for testing or when LLM_PROVIDER=mock.
     """
     global _global_provider
     if _global_provider is not None:
         return _global_provider
 
-    provider_name = os.getenv("LLM_PROVIDER", "mock").lower()
-    api_key = os.getenv("LLM_API_KEY", "")
-    model = os.getenv("LLM_MODEL", "gpt-4o-mini")
-    timeout = float(os.getenv("LLM_TIMEOUT", "60.0"))
-    max_retries = int(os.getenv("LLM_MAX_RETRIES", "2"))
+    provider_name = os.getenv("LLM_PROVIDER", settings.llm_provider).lower()
 
-    if provider_name == "openai" and api_key:
-        return OpenAICompatibleProvider(
-            api_key=api_key,
-            model=model,
-            timeout=timeout,
-            max_retries=max_retries,
+    if provider_name == "ollama":
+        return OllamaProvider(
+            base_url=settings.ollama_base_url,
+            model=settings.ollama_model,
+            timeout=settings.ollama_timeout_seconds,
+            max_concurrent=settings.ollama_max_concurrent,
+            context_size=settings.ollama_context_size,
+            temperature=settings.ollama_temperature,
+            keep_alive=settings.ollama_keep_alive,
+            max_retries=settings.ollama_max_retries,
         )
 
-    # Default to deterministic mock provider
+    # Deterministic mock provider for tests or offline validation
     return MockLLMProvider()
 
 

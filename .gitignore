@@ -65,3 +65,14 @@ temp/
 
 # Generated artifacts
 *.pid
+
+# Backend runtime workspaces (cloned repo analysis data - never commit)
+backend/runtime/workspaces/
+backend/runtime/
+
+# Python bytecode (never commit)
+*.pyc
+*.pyo
+*.pyd
+__pycache__/
+backend/tests/__pycache__/
