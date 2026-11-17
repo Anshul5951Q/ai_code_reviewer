@@ -397,8 +397,16 @@ class UnderstandingVerificationGate:
         )
 
         # 7. Decoupled Verification Status
-        if accepted_claims == 0 or (len(verified_entry_points) == 0 and len(verified_modules) == 0 and len(norm_known_paths) > 0):
+        # An agent that made no claims (e.g. a tiny repo with no entry points) has not
+        # hallucinated anything, so only fail when claims were actually rejected.
+        if rejected_claims > 0 and (
+            accepted_claims == 0
+            or (len(verified_entry_points) == 0 and len(verified_modules) == 0 and len(norm_known_paths) > 0)
+        ):
             verification_status = "failed_validation"
+        elif accepted_claims == 0:
+            validation_warnings.append("Agent made no verifiable claims; continuing with deterministic data only")
+            verification_status = "verified"
         elif rejected_claims > 0:
             verification_status = "verified_with_scrubbing"
         else:

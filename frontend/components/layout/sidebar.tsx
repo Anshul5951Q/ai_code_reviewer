@@ -7,6 +7,7 @@ import {
   GitBranch,
   ScanSearch,
   ClipboardList,
+  FileText,
   ShieldAlert,
   Settings,
   Code2,
@@ -22,6 +23,7 @@ const NAV_GROUPS = [
       { label: 'Repositories', href: '/dashboard/repositories', icon: GitBranch },
       { label: 'Reviewer', href: '/dashboard/reviewer', icon: ScanSearch },
       { label: 'Reviews', href: '/dashboard/reviews', icon: ClipboardList },
+      { label: 'Reports', href: '/dashboard/reports', icon: FileText },
     ],
   },
   {

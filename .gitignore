@@ -56,7 +56,7 @@ coverage/
 
 # Local AI / model artifacts
 ollama/
-models/
+/models/
 
 # Temporary files
 tmp/

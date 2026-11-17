@@ -61,7 +61,7 @@ async def start_analysis(
         .where(AnalysisJob.review_id == review_id)
         .order_by(AnalysisJob.created_at.desc())
     )
-    existing_job = existing_res.scalar_one_or_none()
+    existing_job = existing_res.scalars().first()
 
     if existing_job is not None and existing_job.is_active:
         if force:
@@ -186,7 +186,7 @@ async def get_analysis_status(
         .where(AnalysisJob.review_id == review_id)
         .order_by(AnalysisJob.created_at.desc())
     )
-    job = job_res.scalar_one_or_none()
+    job = job_res.scalars().first()
     if job is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,

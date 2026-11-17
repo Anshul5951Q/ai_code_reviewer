@@ -9,6 +9,7 @@ const ROUTE_LABELS: Record<string, string> = {
   repositories: 'Repositories',
   reviewer: 'Reviewer',
   reviews: 'Reviews',
+  reports: 'Reports',
   security: 'Security',
   settings: 'Settings',
 };
