@@ -632,6 +632,9 @@ class OllamaProvider(LLMProvider):
                         return re.sub(r"<think>[\s\S]*?</think>", "", msg).strip()
                     except (httpx.ConnectError, httpx.ConnectTimeout) as exc:
                         raise ProviderUnavailableError(f"Ollama server is unavailable at {self.base_url}: {exc}") from exc
+                    except httpx.TimeoutException as exc:
+                        # Retrying a timed-out generation just repeats the same slow call.
+                        raise InferenceTimeoutError(f"Ollama inference timed out after {self.timeout}s") from exc
                     except (ModelNotFoundError, LLMProviderError):
                         raise
                     except Exception as exc:
@@ -783,6 +786,9 @@ class OllamaProvider(LLMProvider):
 
                     except (httpx.ConnectError, httpx.ConnectTimeout) as exc:
                         raise ProviderUnavailableError(f"Ollama server is unavailable at {self.base_url}: {exc}") from exc
+                    except httpx.TimeoutException as exc:
+                        # Retrying a timed-out generation just repeats the same slow call.
+                        raise InferenceTimeoutError(f"Ollama inference timed out after {self.timeout}s") from exc
                     except (ModelNotFoundError, ProviderUnavailableError):
                         raise
                     except (httpx.HTTPError, json.JSONDecodeError, ValidationError, ModelRefusalError) as exc:

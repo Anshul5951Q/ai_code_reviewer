@@ -9,16 +9,12 @@ import {
   GitBranch,
   Clock,
   Sparkles,
+  FileText,
 } from 'lucide-react';
 import { PageHeader } from '@/components/layout/page-header';
 import { ReviewAnalysisProgress } from '@/components/reviews/review-analysis-progress';
-import { RepositorySnapshotCard } from '@/components/reviews/repository-snapshot';
 import { AnalysisErrorCard } from '@/components/reviews/analysis-error';
 import { AgentAnalysisProgress } from '@/components/reviews/agent-analysis-progress';
-import { AgentStatusCard } from '@/components/reviews/agent-status-card';
-import { AgentResultSummary } from '@/components/reviews/agent-result-summary';
-import { FindingsSummary } from '@/components/reviews/findings-summary';
-import { FindingList } from '@/components/reviews/finding-list';
 import {
   ApiClientError,
   getReview,
@@ -432,42 +428,25 @@ export function ReviewDetailView({ reviewId }: ReviewDetailViewProps) {
         />
       )}
 
-      {/* Agent Results Summary (Scores) */}
-      {review && hasCompletedAgents && (
-        <AgentResultSummary review={review} totalFindings={findings.length} snapshot={snapshot} />
-      )}
-
-      {/* Agent Status Cards Grid */}
-      {agents.length > 0 && (
-        <div>
-          <h4 className="text-[13px] font-semibold text-[var(--text-primary)] mb-3">
-            Autonomous Agent Telemetry
-          </h4>
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-3">
-            {agents.map((agent) => (
-              <AgentStatusCard key={agent.id} agent={agent} />
-            ))}
+      {/* Full report lives on its own page */}
+      {hasCompletedAgents && !isPipelineActive && (
+        <div className="p-4 rounded-lg border border-[var(--primary-border)] bg-[var(--primary-subtle)] flex items-center justify-between gap-3">
+          <div>
+            <p className="text-[13px] font-semibold text-[var(--text-primary)]">Analysis report ready</p>
+            <p className="text-xs text-[var(--text-secondary)]">
+              Scores, agent telemetry, {findings.length} findings and repository snapshot.
+            </p>
           </div>
+          <Link
+            href={`/dashboard/reports/${reviewId}`}
+            className="btn btn-primary flex items-center gap-2 text-xs py-2 px-3"
+          >
+            <FileText size={14} />
+            View Report
+          </Link>
         </div>
       )}
 
-      {/* Findings Breakdown & List */}
-      {hasCompletedAgents && (
-        <div className="space-y-4">
-          <FindingsSummary findings={findings} />
-          <FindingList findings={findings} reviewId={reviewId} />
-        </div>
-      )}
-
-      {/* Repository Snapshot (Phase 3) */}
-      {snapshot && (
-        <div className="pt-4 border-t border-[var(--border-subtle)]">
-          <h4 className="text-[13px] font-semibold text-[var(--text-secondary)] mb-3 uppercase tracking-wider">
-            Repository Ingestion Snapshot
-          </h4>
-          <RepositorySnapshotCard snapshot={snapshot} />
-        </div>
-      )}
     </div>
   );
 }

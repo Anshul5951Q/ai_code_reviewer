@@ -67,7 +67,7 @@ class Settings(BaseSettings):
     # Ollama Local LLM Provider (Phase 7)
     ollama_base_url: str = "http://localhost:11434"
     ollama_model: str = "qwen2.5-coder:7b"
-    ollama_timeout_seconds: float = 120.0
+    ollama_timeout_seconds: float = 300.0
     ollama_max_concurrent: int = 1
     ollama_context_size: int = 8192
     ollama_temperature: float = 0.1

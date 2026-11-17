@@ -217,7 +217,7 @@ class AnalysisOrchestrator:
                     .where(AnalysisJob.review_id == review_id)
                     .order_by(AnalysisJob.created_at.desc())
                 )
-                j = job_res.scalar_one_or_none()
+                j = job_res.scalars().first()
                 if j and j.is_active:
                     job_id = j.id
 
